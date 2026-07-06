@@ -1,0 +1,9 @@
+---
+# Ansible Galaxy collections required by the migration playbooks.
+# Install with: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: openstack.cloud          # OpenStack stage (Nova boot-from-volume, etc.)
+    version: ">=2.2.0"
+  - name: community.vmware         # vSphere stage (vCenter/ESXi)
+  - name: purestorage.flasharray   # Pure FlashArray volume management
+  - name: ansible.posix

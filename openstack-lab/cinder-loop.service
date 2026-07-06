@@ -1,0 +1,18 @@
+# Installed on openstack00 at /etc/systemd/system/cinder-loop.service.
+# Recreates the loopback-backed cinder-volumes LVM VG across reboots.
+[Unit]
+Description=Cinder LVM loopback device
+DefaultDependencies=no
+After=systemd-udev-settle.service
+Before=lvm2-activation-early.service docker.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/losetup /dev/loop100 /var/lib/cinder-volumes.img
+ExecStart=/sbin/vgchange -ay cinder-volumes
+ExecStop=/sbin/losetup -d /dev/loop100
+
+[Install]
+WantedBy=local-fs.target

@@ -1,0 +1,10 @@
+---
+# Secrets template. Copy to vault.yml, fill in real values, then encrypt:
+#     cp vault.example.yml vault.yml
+#     ansible-vault encrypt vault.yml
+# Run playbooks with --ask-vault-pass (or configure vault_password_file in ansible.cfg).
+# vault.yml is git-ignored.
+
+vault_vcenter_password: "CHANGE_ME"
+vault_fa_api_token: "CHANGE_ME"
+vault_esxi_password: "CHANGE_ME"

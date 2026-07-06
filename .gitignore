@@ -1,0 +1,30 @@
+# Ansible
+*.retry
+__pycache__/
+*.pyc
+
+# Local-only — keep in the working folder, never publish
+CLAUDE.md
+.claude/
+.mcp.json
+
+# Secrets — never commit
+*.vault
+vault_pass*
+.vault_pass*
+vault.yml
+inventory/group_vars/all/vault.yml
+passwords.yml
+admin-openrc.sh
+clouds.yaml
+id_rsa
+id_rsa.*
+id_ed25519
+*.pem
+
+# Environment-specific (use the .example templates instead)
+mapping.yaml
+
+# Local run artifacts
+*.log
+tmp_*

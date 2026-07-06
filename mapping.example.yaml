@@ -1,0 +1,44 @@
+---
+# ============================================================================
+# vSphere -> OpenStack migration mapping (stage 2 input)
+# ============================================================================
+# Copy to mapping.yaml and edit. One entry per VM to migrate.
+#
+# The Cinder backend (cinder_pure_host / cinder_pure_volume_type) is configured
+# in inventory/group_vars/all/main.yml - this file only lists WHAT to migrate.
+#
+# PRECONDITION: stage 1 (migrate_vm.yaml) has cloned each VMDK onto a Pure
+# volume named:  <target_vm_name lowercased>-disk-<index>  and disconnected it.
+# ============================================================================
+
+vm_migrations:
+  - name: "lin-server01"            # OpenStack instance name (usually the source VM name)
+
+    # Reference an existing flavor by name...
+    flavor: "m1.large"
+    # ...or auto-create one from these:
+    # flavor_auto: true
+    # vcpus: 2
+    # ram_mb: 4096
+
+    availability_zone: "nova"
+    key_name: ""                    # Nova keypair name ("" = none)
+    security_groups:
+      - "default"
+
+    # vSphere portgroup -> Neutron network, in vNIC order.
+    networks:
+      - network: "provider-net"     # Neutron network name or id
+        # fixed_ip: "10.0.0.50"     # optional static IP
+
+    # Disk mapping. `pure_volume` = the FlashArray volume from stage 1.
+    # EXACTLY ONE disk must have `boot: true`.
+    disks:
+      - pure_volume: "lin-server01-disk-0"
+        boot: true
+      - pure_volume: "lin-server01-disk-1"
+        boot: false
+
+    metadata:
+      migrated_from: "vsphere"
+      source_vm: "lin-server01"

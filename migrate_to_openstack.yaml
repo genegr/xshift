@@ -1,0 +1,13 @@
+---
+# Stage 2: Pure volumes -> OpenStack. Logic lives in roles/pure_to_openstack.
+# Source your admin-openrc.sh (or set OS_CLOUD) first.
+#   Dry run (default):  ansible-playbook migrate_to_openstack.yaml
+#   Execute:            ansible-playbook migrate_to_openstack.yaml -e "dry_run=false"
+#   Custom mapping:     ... -e "mapping_file=other-mapping.yaml"
+- name: "Stage 2 - import Pure volumes and boot instances"
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - "{{ mapping_file | default('mapping.yaml') }}"
+  roles:
+    - pure_to_openstack

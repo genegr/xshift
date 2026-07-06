@@ -1,0 +1,48 @@
+---
+# Stage 1: clone a powered-off VM's VMDKs onto Pure FlashArray volumes via XCOPY.
+
+- name: "Status Check: Dry Run Mode"
+  ansible.builtin.debug:
+    msg: "DRY RUN MODE IS ENABLED. No volumes will be created or data copied."
+  when: dry_run | bool
+
+- name: Get VM general information (power state)
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    name: "{{ target_vm_name }}"
+  delegate_to: localhost
+  register: vm_general_info
+
+- name: Ensure VM is powered off (safety check)
+  ansible.builtin.fail:
+    msg: >-
+      The VM '{{ target_vm_name }}' is currently
+      {{ vm_general_info.instance.hw_power_status }}.
+      Power it off to perform a cold migration.
+  when:
+    - not (dry_run | bool)
+    - vm_general_info.instance.hw_power_status != 'poweredOff'
+
+- name: Gather VM disk information from vCenter
+  community.vmware.vmware_guest_disk_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    name: "{{ target_vm_name }}"
+  delegate_to: localhost
+  register: vm_disk_info
+
+- name: Process each flat VMDK for migration
+  ansible.builtin.include_tasks: migrate_disk.yml
+  loop: "{{ vm_disk_info.guest_disk_info | dict2items }}"
+  loop_control:
+    loop_var: disk_item
+    index_var: disk_index
+    label: "disk {{ disk_index }}"
+  when: "'FlatVer2' in disk_item.value.backing_type"

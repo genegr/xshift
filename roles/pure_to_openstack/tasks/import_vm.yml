@@ -1,0 +1,115 @@
+---
+# Per-VM import (loop_var: vm). Credentials from the environment (source
+# admin-openrc.sh) or OS_CLOUD.
+
+# 1. Manage each Pure volume into Cinder (idempotent)
+- name: "{{ vm.name }} | Check whether each Pure volume is already managed"
+  ansible.builtin.command: "openstack volume show {{ item.pure_volume }} -f value -c id"
+  register: vol_check
+  changed_when: false
+  failed_when: false
+  loop: "{{ vm.disks }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item.pure_volume }}"
+
+- name: "{{ vm.name }} | Manage existing Pure volumes into Cinder"
+  ansible.builtin.command: >-
+    cinder manage {{ cinder_pure_host }} {{ item.item.pure_volume }}
+    --id-type source-name
+    --name {{ item.item.pure_volume }}
+    --volume-type {{ cinder_pure_volume_type }}
+    {{ '--bootable' if (item.item.boot | default(false)) else '' }}
+  when: item.rc != 0
+  loop: "{{ vol_check.results }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item.item.pure_volume }}"
+
+- name: "{{ vm.name }} | Wait for managed volumes to become available"
+  ansible.builtin.command: "openstack volume show {{ item.pure_volume }} -f value -c status"
+  register: vol_status
+  until: vol_status.stdout == "available"
+  retries: "{{ volume_available_retries }}"
+  delay: "{{ volume_available_delay }}"
+  changed_when: false
+  loop: "{{ vm.disks }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item.pure_volume }}"
+
+# 2. Resolve boot vs data volumes
+- name: "{{ vm.name }} | Identify boot and data volumes"
+  ansible.builtin.set_fact:
+    boot_volume_name: "{{ (vm.disks | selectattr('boot', 'defined') | selectattr('boot') | map(attribute='pure_volume') | list | first) }}"
+    data_volume_names: >-
+      {{ vm.disks | map(attribute='pure_volume') | list
+         | difference([ (vm.disks | selectattr('boot', 'defined') | selectattr('boot') | map(attribute='pure_volume') | list | first) ]) }}
+
+- name: "{{ vm.name }} | Fail if no boot disk defined"
+  ansible.builtin.fail:
+    msg: "VM '{{ vm.name }}' has no disk marked 'boot: true' in the mapping."
+  when: boot_volume_name | length == 0
+
+# 3. Optional flavor auto-create
+- name: "{{ vm.name }} | Auto-create flavor"
+  openstack.cloud.compute_flavor:
+    name: "migrated-{{ vm.name }}"
+    vcpus: "{{ vm.vcpus }}"
+    ram: "{{ vm.ram_mb }}"
+    disk: 0
+    state: present
+  when: vm.flavor_auto | default(false) | bool
+
+- name: "{{ vm.name }} | Set effective flavor name"
+  ansible.builtin.set_fact:
+    effective_flavor: "{{ ('migrated-' + vm.name) if (vm.flavor_auto | default(false) | bool) else vm.flavor }}"
+
+# 4. Build NIC list from the network mapping
+- name: "{{ vm.name }} | Reset NIC list"
+  ansible.builtin.set_fact:
+    nics_list: []
+
+- name: "{{ vm.name }} | Build NIC list"
+  ansible.builtin.set_fact:
+    nics_list: >-
+      {{ nics_list + [ {'net-name': net.network}
+         | combine({'v4-fixed-ip': net.fixed_ip} if net.fixed_ip is defined else {}) ] }}
+  loop: "{{ vm.networks }}"
+  loop_control:
+    loop_var: net
+    label: "{{ net.network }}"
+
+# 5. Boot the instance from the boot volume
+- name: "{{ vm.name }} | Boot instance from volume"
+  openstack.cloud.server:
+    name: "{{ vm.name }}"
+    flavor: "{{ effective_flavor }}"
+    boot_volume: "{{ boot_volume_name }}"
+    terminate_volume: false
+    availability_zone: "{{ vm.availability_zone | default(omit) }}"
+    key_name: "{{ vm.key_name if (vm.key_name | default('') | length > 0) else omit }}"
+    security_groups: "{{ vm.security_groups | default(omit) }}"
+    nics: "{{ nics_list }}"
+    meta: "{{ vm.metadata | default(omit) }}"
+    auto_ip: false
+    state: present
+    timeout: "{{ server_boot_timeout }}"
+  register: srv
+
+# 6. Attach data volumes
+- name: "{{ vm.name }} | Attach data volumes"
+  openstack.cloud.server_volume:
+    server: "{{ vm.name }}"
+    volume: "{{ item }}"
+    state: present
+  loop: "{{ data_volume_names }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "{{ vm.name }} | Result"
+  ansible.builtin.debug:
+    msg: >-
+      Migrated '{{ vm.name }}' -> instance {{ srv.server.id | default('?') }},
+      status={{ srv.server.status | default('?') }},
+      addresses={{ srv.server.addresses | default({}) }}

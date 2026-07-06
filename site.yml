@@ -1,0 +1,6 @@
+---
+# Full pipeline: stage 1 (vSphere -> Pure) then stage 2 (Pure -> OpenStack).
+# Requires vCenter/ESXi/Pure access AND OpenStack credentials in the environment.
+# Run stages individually (migrate_vm.yaml / migrate_to_openstack.yaml) if preferred.
+- import_playbook: migrate_vm.yaml
+- import_playbook: migrate_to_openstack.yaml

@@ -1,0 +1,32 @@
+---
+# Stage 2: import the Pure volumes into Cinder (manage-existing) and recreate
+# each VM as a Nova instance (boot-from-volume). Requires vm_migrations
+# (supplied by the mapping file) and OpenStack credentials in the environment.
+
+- name: Validate mapping is present
+  ansible.builtin.assert:
+    that:
+      - vm_migrations is defined
+      - vm_migrations | length > 0
+    fail_msg: "No 'vm_migrations' found. Provide a mapping file (see mapping.example.yaml)."
+
+- name: "[DRY RUN] Show migration plan"
+  ansible.builtin.debug:
+    msg: >-
+      Would migrate '{{ item.name }}':
+      flavor={{ item.flavor | default('auto') }},
+      networks={{ item.networks | map(attribute='network') | list }},
+      boot={{ item.disks | selectattr('boot', 'defined') | selectattr('boot') | map(attribute='pure_volume') | list }},
+      data={{ item.disks | rejectattr('boot', 'defined') | map(attribute='pure_volume') | list }}
+  loop: "{{ vm_migrations }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: dry_run | bool
+
+- name: Import and boot each VM
+  ansible.builtin.include_tasks: import_vm.yml
+  loop: "{{ vm_migrations }}"
+  loop_control:
+    loop_var: vm
+    label: "{{ vm.name }}"
+  when: not (dry_run | bool)

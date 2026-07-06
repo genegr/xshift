@@ -1,0 +1,14 @@
+---
+dry_run: true
+
+# Cinder backend that owns the Pure volumes (host@backend#pool).
+# Usually set in group_vars/all; kept here as a fallback default.
+cinder_pure_host: "openstack00@Pure-FlashArray-iscsi#pure_iscsi_backend"
+cinder_pure_volume_type: "pure"
+
+# Retry budget while waiting for managed volumes to become available
+volume_available_retries: 20
+volume_available_delay: 3
+
+# Nova boot timeout (seconds)
+server_boot_timeout: 300

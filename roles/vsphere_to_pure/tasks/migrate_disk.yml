@@ -1,0 +1,127 @@
+---
+# Per-disk migration (loop_var: disk_item, index_var: disk_index)
+
+# ---------------------------------------------------------------------------
+# 1. Calculation (always runs)
+# ---------------------------------------------------------------------------
+- name: "Disk {{ disk_index }} | Calculate parameters"
+  ansible.builtin.set_fact:
+    src_ds_name: "{{ disk_item.value.backing_filename.split(']')[0] | replace('[', '') }}"
+    src_file_path: "{{ disk_item.value.backing_filename.split('] ')[1] }}"
+    vol_size_gb: "{{ ((disk_item.value.capacity_in_kb | int) / 1048576) | round(0, 'ceil') | int }}G"
+    dest_vol_name: "{{ target_vm_name | lower }}-disk-{{ disk_index }}"
+
+- name: "Disk {{ disk_index }} | Build paths"
+  ansible.builtin.set_fact:
+    full_vmdk_path: "/vmfs/volumes/{{ src_ds_name }}/{{ src_file_path }}"
+    temp_rdm_path: "/vmfs/volumes/{{ src_ds_name }}/{{ target_vm_name }}_temp_{{ disk_index }}.vmdk"
+
+# ---------------------------------------------------------------------------
+# 2. Dry-run reporting
+# ---------------------------------------------------------------------------
+- name: "Disk {{ disk_index }} | [DRY RUN] Plan"
+  ansible.builtin.debug:
+    msg:
+      - "ACTION: migrate disk {{ disk_index }}"
+      - "SOURCE: {{ full_vmdk_path }}"
+      - "TARGET: FlashArray volume '{{ dest_vol_name }}' ({{ vol_size_gb }})"
+      - "HOST:   Pure host object '{{ pure_host_name }}'"
+      - "EXEC:   vmkfstools on ESXi '{{ target_esxi_host }}'"
+  when: dry_run | bool
+
+# ---------------------------------------------------------------------------
+# 3. Execution + guaranteed cleanup (skipped on dry run)
+# ---------------------------------------------------------------------------
+- name: "Disk {{ disk_index }} | Migrate"
+  when: not (dry_run | bool)
+  block:
+    - name: "Disk {{ disk_index }} | Create volume on FlashArray"
+      purestorage.flasharray.purefa_volume:
+        name: "{{ dest_vol_name }}"
+        size: "{{ vol_size_gb }}"
+        fa_url: "{{ fa_url }}"
+        api_token: "{{ fa_api_token }}"
+        state: present
+      delegate_to: localhost
+
+    - name: "Disk {{ disk_index }} | Connect volume to ESXi host on FlashArray"
+      purestorage.flasharray.purefa_host:
+        name: "{{ pure_host_name }}"
+        volume: "{{ dest_vol_name }}"
+        fa_url: "{{ fa_url }}"
+        api_token: "{{ fa_api_token }}"
+        state: present
+      delegate_to: localhost
+
+    - name: "Disk {{ disk_index }} | Get volume serial from FlashArray"
+      purestorage.flasharray.purefa_info:
+        gather_subset: volumes
+        fa_url: "{{ fa_url }}"
+        api_token: "{{ fa_api_token }}"
+      delegate_to: localhost
+      register: fa_info
+
+    - name: "Disk {{ disk_index }} | Compute volume NAA id"
+      ansible.builtin.set_fact:
+        vol_naa: "{{ pure_naa_prefix }}{{ fa_info.purefa_info.volumes[dest_vol_name].serial | lower }}"
+
+    - name: "Disk {{ disk_index }} | Rescan HBAs on ESXi"
+      community.vmware.vmware_host_scanhba:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs }}"
+        esxi_hostname: "{{ target_esxi_host }}"
+        refresh_storage: true
+        rescan_hba: true
+        rescan_vmfs: true
+      delegate_to: localhost
+
+    - name: "Disk {{ disk_index }} | Wait for FlashArray device on ESXi"
+      ansible.builtin.wait_for:
+        path: "/vmfs/devices/disks/{{ vol_naa }}"
+        timeout: "{{ device_wait_timeout }}"
+        state: present
+      delegate_to: "{{ target_esxi_host }}"
+
+    - name: "Disk {{ disk_index }} | Clone VMDK to FlashArray volume (XCOPY via RDM)"
+      ansible.builtin.command: >-
+        vmkfstools -i "{{ full_vmdk_path }}"
+        -d rdmp:/vmfs/devices/disks/{{ vol_naa }}
+        "{{ temp_rdm_path }}"
+      delegate_to: "{{ target_esxi_host }}"
+      register: clone_out
+      changed_when: clone_out.rc == 0
+
+  rescue:
+    - name: "Disk {{ disk_index }} | Migration FAILED"
+      ansible.builtin.fail:
+        msg: "Migration of disk {{ disk_index }} ({{ dest_vol_name }}) failed; cleanup ran in 'always'."
+
+  always:
+    - name: "Disk {{ disk_index }} | Remove temporary RDM mapping file"
+      ansible.builtin.file:
+        path: "{{ temp_rdm_path }}"
+        state: absent
+      delegate_to: "{{ target_esxi_host }}"
+
+    - name: "Disk {{ disk_index }} | Disconnect volume from ESXi host"
+      purestorage.flasharray.purefa_host:
+        name: "{{ pure_host_name }}"
+        volume: "{{ dest_vol_name }}"
+        fa_url: "{{ fa_url }}"
+        api_token: "{{ fa_api_token }}"
+        state: absent
+      delegate_to: localhost
+
+    - name: "Disk {{ disk_index }} | Final rescan to clean up dead paths"
+      community.vmware.vmware_host_scanhba:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs }}"
+        esxi_hostname: "{{ target_esxi_host }}"
+        refresh_storage: true
+        rescan_hba: true
+        rescan_vmfs: true
+      delegate_to: localhost

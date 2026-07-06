@@ -1,0 +1,17 @@
+---
+# Simulate unless explicitly disabled
+dry_run: true
+
+# vCenter TLS verification (labs often use self-signed certs)
+vcenter_validate_certs: false
+
+# Pure FlashArray NAA prefix (OUI 624a9370) used to locate the device on ESXi
+pure_naa_prefix: "naa.624a9370"
+
+# ESXi host (member of the 'hypervisors' group) on which vmkfstools runs.
+# Defaults to the first hypervisor; ideally set to the host that owns the VM
+# and mounts the source datastore.
+target_esxi_host: "{{ groups['hypervisors'][0] }}"
+
+# Seconds to wait for the new FlashArray device to appear on ESXi
+device_wait_timeout: 60

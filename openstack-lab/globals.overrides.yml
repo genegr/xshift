@@ -1,0 +1,28 @@
+# Settings appended to kolla-ansible's sample /etc/kolla/globals.yml for this
+# single-node AIO on openstack00. (The sample provides the rest, all commented.)
+#
+# NOTE: pure_api_token is NOT here - it lives in passwords.yml (never committed).
+
+kolla_base_distro: "ubuntu"
+
+# No-HA single node: services bind the host IP directly (no VIP/keepalived/haproxy/proxysql).
+kolla_internal_vip_address: "172.17.20.101"
+enable_haproxy: "no"
+enable_proxysql: "no"
+
+network_interface: "ens34"              # management/API (has the host IP)
+neutron_external_interface: "ens192"    # provider/VM network (no IP)
+
+nova_compute_virt_type: "kvm"           # nested KVM available on this VM
+
+# quay.io/openstack.kolla images are gated as test-only in 2026.1
+kolla_test_images: "yes"
+
+# Cinder: LVM (local loopback) + Pure FlashArray iSCSI (default type)
+enable_cinder: "yes"
+enable_cinder_backend_lvm: "yes"
+enable_cinder_backend_pure_iscsi: "yes"
+enable_multipathd: "yes"
+pure_san_ip: "10.225.112.90"
+# Custom cinder-volume image with py-pure-client added (served from local registry)
+cinder_volume_image_full: "localhost:4000/cinder-volume-pure:2026.1"

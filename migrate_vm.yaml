@@ -1,44 +1,9 @@
-- name: Migrating VM Disks to Pure FlashArray Volumes
+---
+# Stage 1: vSphere -> Pure FlashArray (XCOPY). Logic lives in roles/vsphere_to_pure.
+#   Dry run (default):  ansible-playbook migrate_vm.yaml
+#   Execute:            ansible-playbook migrate_vm.yaml -e "dry_run=false"
+- name: "Stage 1 - clone VM disks to Pure FlashArray volumes"
   hosts: localhost
   gather_facts: no
-  
-  tasks:
-    - name: "Status Check: Dry Run Mode"
-      ansible.builtin.debug:
-        msg: "DRY RUN MODE IS ENABLED. No volumes will be created or data copied."
-      when: dry_run | bool
-
-    - name: Get VM General Information (Power State)
-      community.vmware.vmware_guest_info:
-        hostname: "{{ vcenter_hostname }}"
-        username: "{{ vcenter_username }}"
-        password: "{{ vcenter_password }}"
-        validate_certs: no
-        datacenter: "{{ vcenter_datacenter }}"
-        name: "{{ target_vm_name }}"
-      register: vm_general_info
-
-    - name: Ensure VM is powered off (Safety Check)
-      fail:
-        msg: "The VM '{{ target_vm_name }}' is currently {{ vm_general_info.instance.hw_power_status }}. Please power it off to perform a cold migration."
-      when: 
-        - not (dry_run | bool)
-        - vm_general_info.instance.hw_power_status != 'poweredOff'
-
-    - name: Gather VM Disk Information from vCenter
-      community.vmware.vmware_guest_disk_info:
-        hostname: "{{ vcenter_hostname }}"
-        username: "{{ vcenter_username }}"
-        password: "{{ vcenter_password }}"
-        validate_certs: no
-        datacenter: "{{ vcenter_datacenter }}"
-        name: "{{ target_vm_name }}"
-      register: vm_disk_info
-      
-    - name: Process each disk for migration
-      include_tasks: migrate_disk_tasks.yaml
-      loop: "{{ vm_disk_info.guest_disk_info | dict2items }}"
-      loop_control:
-        loop_var: disk_item
-        index_var: disk_index
-      when: "'FlatVer2' in disk_item.value.backing_type"
+  roles:
+    - vsphere_to_pure

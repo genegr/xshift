@@ -1,4 +1,6 @@
-# vSphere to OpenStack VM Migration (Pure FlashArray XCOPY)
+# xshift
+
+**Storage-offloaded vSphere → OpenStack VM migration via Pure FlashArray XCOPY.**
 
 Fast, storage-offloaded cold migration of virtual machine disks from **VMware vSphere** to
 **OpenStack**, using **Pure Storage FlashArray** VAAI **XCOPY** to move the data at array speed
@@ -8,10 +10,11 @@ Instead of streaming each VMDK across the wire (slow, network-bound), this proje
 FlashArray to duplicate the blocks internally. A multi-hundred-GB disk that would take hours over
 NFS/iSCSI copy is reduced to minutes (or seconds on thin/deduplicated data).
 
-> **Status:** the vSphere → FlashArray data-landing stage is implemented and works today. The
-> OpenStack import stage (Cinder *manage existing* + Nova *boot-from-volume*) is designed below and
-> on the [roadmap](#roadmap) but not yet automated in this repo. See
-> [What works today vs. what's planned](#what-works-today-vs-whats-planned).
+> **Status:** both stages are implemented. Stage 1 (vSphere → FlashArray, `migrate_vm.yaml`) clones
+> each VMDK onto a Pure volume via XCOPY. Stage 2 (`migrate_to_openstack.yaml`) imports those Pure
+> volumes into Cinder via *manage-existing* and boots each VM with Nova *boot-from-volume* — validated
+> end-to-end against a kolla-ansible OpenStack 2026.1 lab (see [`openstack-lab/`](openstack-lab/)).
+> See [What works today vs. what's planned](#what-works-today-vs-whats-planned).
 
 ---
 
@@ -148,9 +151,10 @@ VMDK → a Cinder volume with a boot flag, etc.). The mapping design will land w
 | Present volume to ESXi, rescan, XCOPY clone via `vmkfstools` | ✅ Implemented |
 | Cleanup (remove RDM, detach volume, final rescan) | ✅ Implemented |
 | Dry-run mode (plan without changing anything) | ✅ Implemented |
-| Cinder *manage existing* import of the landed volume | ⏳ Planned |
-| Nova boot-from-volume instance creation | ⏳ Planned |
-| Declarative vSphere→OpenStack VM mapping (flavor/network/disks) | ⏳ Planned |
+| Cinder *manage existing* import of the landed volume | ✅ Implemented (`migrate_to_openstack.yaml`) |
+| Nova boot-from-volume instance creation | ✅ Implemented (`openstack_import_tasks.yaml`) |
+| Declarative vSphere→OpenStack VM mapping (flavor/network/disks) | ✅ Implemented (`mapping.example.yaml`) |
+| Reproducible OpenStack dev lab (kolla-ansible AIO + Pure iSCSI) | ✅ Implemented ([`openstack-lab/`](openstack-lab/)) |
 | Ansible Vault for secrets, role-based structure, CI lint | ⏳ Planned |
 
 ## Prerequisites
@@ -172,8 +176,10 @@ VMDK → a Cinder volume with a boot flag, etc.). The mapping design will land w
 
 ## Configuration
 
-All configuration currently lives in [`inventory.yaml`](inventory.yaml). Edit it to match your
-environment:
+Shared configuration lives in [`inventory/group_vars/all/main.yml`](inventory/group_vars/all/main.yml);
+hosts/groups in [`inventory/hosts.yml`](inventory/hosts.yml); secrets in `vault.yml` (copy from
+[`vault.example.yml`](inventory/group_vars/all/vault.example.yml) and `ansible-vault encrypt`).
+Per-role tunables are in each role's `defaults/main.yml`. Key variables:
 
 | Variable | Description |
 |----------|-------------|
@@ -185,15 +191,14 @@ environment:
 | `pure_host_name` | FlashArray host/host-group object representing the ESXi host. |
 | `hypervisors` hosts | ESXi host(s) reachable over SSH for `vmkfstools`. |
 
-> ⚠️ Secrets are currently stored in plaintext in `inventory.yaml`. **Do not commit real
-> credentials.** Move them to **Ansible Vault** or environment variables before using this in any
-> real environment, and rotate any token that has been committed. See
-> [Safety & security notes](#safety--security-notes).
+> ⚠️ Secrets (vCenter/ESXi passwords, FlashArray API token) belong in `vault.yml` encrypted with
+> **Ansible Vault** — never commit them in plaintext. `vault.yml` is git-ignored; only the
+> `vault.example.yml` template is tracked. Rotate any credential that has ever been committed.
 
 ## Usage
 
 Development and execution happen on a Linux host using **Docker**, so you don't need to install
-Ansible or its collections directly. (See [`CLAUDE.md`](CLAUDE.md) for the dev workflow.)
+Ansible or its collections directly.
 
 **1. Build the Ansible image** *(Dockerfile added with the tooling work; see roadmap)*
 
@@ -226,45 +231,61 @@ node that has the collections installed.
 
 - **Cold migration only.** The playbook refuses to run against a powered-on VM (outside dry-run) to
   avoid copying a disk with in-flight writes.
-- **Secrets must not be committed.** The sample `inventory.yaml` contains placeholder credentials.
-  Real deployments should use Ansible Vault (`ansible-vault encrypt`) or inject secrets via
-  environment/CI. Rotate any credential that has ever been pushed to git.
-- **Idempotency / re-runs.** Re-running after a partial failure may leave a stale temp RDM file or a
-  still-attached volume; check for leftovers before retrying (hardening is on the roadmap).
-- **`validate_certs: no`** is used for vCenter — acceptable in labs, but enable certificate
-  validation for production.
+- **Secrets belong in Ansible Vault.** Put credentials in `vault.yml` (`ansible-vault encrypt`);
+  it is git-ignored. Rotate any credential that has ever been pushed to git.
+- **Idempotency / re-runs.** Stage 1 wraps execution in `block`/`always`, so the temp RDM removal
+  and volume disconnect run even on failure. Stage 2's manage step is idempotent (skips
+  already-managed volumes).
+- **`validate_certs: false`** is the default for vCenter — acceptable in labs, but enable
+  certificate validation for production (`vcenter_validate_certs: true`).
 
 ## Limitations & known issues
 
-- **OpenStack import is not automated yet** — the pipeline stops after the data lands on the
-  FlashArray volume (steps 6–7 are planned).
-- **ESXi host selection is naive** — the playbook uses the first host in the `hypervisors` group
-  rather than the host that actually owns the VM / mounts the datastore.
+- **ESXi host selection is naive** — stage 1 uses `target_esxi_host` (defaults to the first host in
+  the `hypervisors` group) rather than auto-detecting the host that owns the VM / mounts the
+  datastore.
 - **Only "flat" VMDKs** (`FlatVer2` backing) are processed; RDMs, snapshots and other backing types
   are skipped.
-- **No block/rescue error handling** — a mid-flight failure won't automatically roll back the
-  FlashArray connection or remove temp files.
-- **Environment-specific paths** (e.g. a hardcoded `ansible_python_interpreter`) will need adjusting.
+- **Guest-side adjustments** (drivers/initramfs, network config) after boot-from-volume are out of
+  scope — a migrated Linux guest may need virtio drivers / cloud-init tweaks to boot cleanly.
 
 ## Roadmap
 
-- [ ] Automate the OpenStack stage: Cinder *manage existing* + Nova boot-from-volume.
-- [ ] Declarative per-VM **mapping** (flavor, networks/ports, per-disk volume + boot device, metadata).
-- [ ] Restructure into a proper Ansible **role** with `defaults`, `vars`, and `requirements.yml`.
-- [ ] Move secrets to **Ansible Vault**; remove plaintext credentials.
-- [ ] Add a **Dockerfile** and pinned dependency manifests for reproducible runs.
-- [ ] Detect the correct ESXi host automatically; add block/rescue rollback and idempotent re-runs.
-- [ ] Add `ansible-lint` / `yamllint` in CI.
+- [ ] Detect the correct ESXi host automatically (from the VM's placement).
+- [ ] Add `ansible-lint` / `yamllint` (+ CI).
+- [ ] Optional post-boot guest remediation (virtio/cloud-init) helpers.
+- [ ] Pin collection versions in `requirements.yml`.
 
 ## Repository layout
 
 ```
 .
 ├── README.md                 # This file
-├── CLAUDE.md                 # Project + dev-workflow notes for AI-assisted development
-├── inventory.yaml            # Inventory + configuration (secrets should move to Vault)
-├── migrate_vm.yaml           # Entry playbook: read VM, safety checks, loop over disks
-└── migrate_disk_tasks.yaml   # Per-disk logic: provision, present, XCOPY clone, cleanup
+├── ansible.cfg               # inventory path, roles_path, sane defaults
+├── Dockerfile                # Migration-runner image (ansible + collections/SDKs)
+├── requirements.yml          # Ansible collections (openstack.cloud, vmware, purestorage)
+├── site.yml                  # Full pipeline (stage 1 + stage 2)
+├── migrate_vm.yaml           # Stage 1 entry playbook  -> role vsphere_to_pure
+├── migrate_to_openstack.yaml # Stage 2 entry playbook  -> role pure_to_openstack
+├── mapping.example.yaml      # vSphere → OpenStack mapping (copy to mapping.yaml)
+│
+├── inventory/
+│   ├── hosts.yml             # hosts/groups only (localhost + ESXi hypervisors)
+│   └── group_vars/all/
+│       ├── main.yml          # shared non-secret config (vCenter/Pure/OpenStack)
+│       └── vault.example.yml # secrets template → copy to vault.yml + ansible-vault encrypt
+│
+├── roles/
+│   ├── vsphere_to_pure/      # Stage 1: VMDK → Pure volume via XCOPY (block/always cleanup)
+│   │   ├── defaults/main.yml
+│   │   ├── tasks/{main,migrate_disk}.yml
+│   │   └── README.md
+│   └── pure_to_openstack/    # Stage 2: cinder manage-existing → Nova boot-from-volume
+│       ├── defaults/main.yml
+│       ├── tasks/{main,import_vm}.yml
+│       └── README.md
+│
+└── openstack-lab/            # Reproducible kolla-ansible OpenStack 2026.1 dev lab
 ```
 
 ## Disclaimer

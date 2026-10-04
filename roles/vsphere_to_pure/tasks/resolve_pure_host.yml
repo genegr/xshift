@@ -1,0 +1,182 @@
+---
+# Resolve the FlashArray host object for the ESXi execution host (needs esxi_exec_host).
+# The object is found by the ESXi host's initiators (FC WWNs first, then iSCSI IQN), not
+# by name. If none exists it is created (reported only, on a dry run).
+# Sets: esxi_exec_pure_host, pure_host_to_create.
+# NVMe NQNs are not considered: the RDM-based clone needs a SCSI path.
+
+- name: Read the ESXi host's storage adapters from vCenter
+  community.vmware.vmware_host_facts:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    esxi_hostname: "{{ esxi_exec_vcenter_name }}"
+    schema: vsphere
+    properties:
+      - config.storageDevice.hostBusAdapter
+  delegate_to: localhost
+  register: esxi_hba_facts
+
+- name: Reset initiator lists
+  ansible.builtin.set_fact:
+    esxi_wwns: []
+    esxi_iqns: >-
+      {{ esxi_hba_facts.ansible_facts.config.storageDevice.hostBusAdapter
+         | selectattr('iScsiName', 'defined') | map(attribute='iScsiName') | unique | list }}
+    pure_fc_matches: []
+    pure_iscsi_matches: []
+
+# vCenter reports port WWNs as integers; the array stores them as 16 hex digits.
+- name: Collect the ESXi host's FC port WWNs
+  ansible.builtin.set_fact:
+    esxi_wwns: "{{ (esxi_wwns + ['%016X' | format(item | int)]) | unique | list }}"
+  loop: >-
+    {{ esxi_hba_facts.ansible_facts.config.storageDevice.hostBusAdapter
+       | selectattr('portWorldWideName', 'defined') | map(attribute='portWorldWideName') | unique | list }}
+
+# REST instead of purefa_info: its 'hosts' subset fails on some collection/Purity pairs.
+- name: Read host objects from the FlashArray
+  block:
+    - name: Log in to the FlashArray REST API
+      ansible.builtin.uri:
+        url: "https://{{ fa_url }}/api/{{ fa_rest_version }}/login"
+        method: POST
+        headers:
+          api-token: "{{ fa_api_token }}"
+        validate_certs: "{{ fa_validate_certs }}"
+      delegate_to: localhost
+      register: fa_login
+      no_log: true
+
+    - name: List host objects on the FlashArray
+      ansible.builtin.uri:
+        url: "https://{{ fa_url }}/api/{{ fa_rest_version }}/hosts"
+        headers:
+          x-auth-token: "{{ fa_login.x_auth_token }}"
+        validate_certs: "{{ fa_validate_certs }}"
+      delegate_to: localhost
+      register: fa_hosts
+
+  always:
+    - name: Log out of the FlashArray REST API
+      ansible.builtin.uri:
+        url: "https://{{ fa_url }}/api/{{ fa_rest_version }}/logout"
+        method: POST
+        headers:
+          x-auth-token: "{{ fa_login.x_auth_token }}"
+        validate_certs: "{{ fa_validate_certs }}"
+      delegate_to: localhost
+      when: fa_login.x_auth_token is defined
+      failed_when: false
+
+# Hosts stretched in from other arrays (is_local false) carry the same initiators; skip them.
+- name: Keep the array's own host objects
+  ansible.builtin.set_fact:
+    pure_local_hosts: "{{ fa_hosts.json['items'] | selectattr('is_local') | list }}"
+
+- name: Find host objects holding the ESXi host's WWNs
+  ansible.builtin.set_fact:
+    pure_fc_matches: >-
+      {{ (pure_fc_matches + (pure_local_hosts | selectattr('wwns', 'contains', item) | map(attribute='name') | list))
+         | unique | list }}
+  loop: "{{ esxi_wwns }}"
+
+- name: Find host objects holding the ESXi host's IQNs
+  ansible.builtin.set_fact:
+    pure_iscsi_matches: >-
+      {{ (pure_iscsi_matches + (pure_local_hosts | selectattr('iqns', 'contains', item) | map(attribute='name') | list))
+         | unique | list }}
+  loop: "{{ esxi_iqns }}"
+
+- name: Choose the host object
+  ansible.builtin.set_fact:
+    # FC wins over iSCSI when the ESXi host is known to the array through both
+    pure_host_matches: "{{ pure_fc_matches if (pure_fc_matches | length > 0) else pure_iscsi_matches }}"
+    pure_host_existing: "{{ pure_local_hosts | map(attribute='name') | list }}"
+
+- name: Fail if the configured pure_host_name is not on the array
+  ansible.builtin.fail:
+    msg: >-
+      pure_host_name '{{ esxi_pure_host_override }}' is not a host object on {{ fa_url }}.
+      Unset it to match the host by its initiators
+      (found by initiator: {{ (pure_fc_matches + pure_iscsi_matches) | join(', ') | default('none', true) }}).
+  when:
+    - esxi_pure_host_override | length > 0
+    - esxi_pure_host_override not in pure_host_existing
+
+- name: Fail if several host objects hold the ESXi host's initiators
+  ansible.builtin.fail:
+    msg: >-
+      ESXi host '{{ esxi_exec_host }}' matches several host objects on {{ fa_url }}
+      ({{ pure_host_matches | join(', ') }}). Set pure_host_name for this hypervisor to pick one.
+  when:
+    - esxi_pure_host_override | length == 0
+    - pure_host_matches | length > 1
+
+- name: Fail if there is no host object and none can be created
+  ansible.builtin.fail:
+    msg: >-
+      No host object on {{ fa_url }} holds an initiator of ESXi host '{{ esxi_exec_host }}'
+      (WWNs: {{ esxi_wwns | join(', ') | default('none', true) }};
+      IQNs: {{ esxi_iqns | join(', ') | default('none', true) }}).
+      {{ 'A host named ' ~ pure_host_create_name ~ ' already exists with other initiators; set pure_host_create_name or pure_host_name.'
+         if (pure_host_create_name in pure_host_existing)
+         else ('The ESXi host has no FC or iSCSI initiator to register.' if (esxi_wwns + esxi_iqns) | length == 0
+               else 'pure_host_auto_create is false; create the host or set pure_host_name.') }}
+  when:
+    - esxi_pure_host_override | length == 0
+    - pure_host_matches | length == 0
+    - >-
+      not (pure_host_auto_create | bool)
+      or (esxi_wwns + esxi_iqns) | length == 0
+      or pure_host_create_name in pure_host_existing
+
+- name: Set the FlashArray host object
+  ansible.builtin.set_fact:
+    esxi_exec_pure_host: >-
+      {{ esxi_pure_host_override if (esxi_pure_host_override | length > 0)
+         else (pure_host_matches[0] if (pure_host_matches | length == 1) else pure_host_create_name) }}
+    pure_host_to_create: "{{ esxi_pure_host_override | length == 0 and pure_host_matches | length == 0 }}"
+
+- name: Report the FlashArray host object
+  ansible.builtin.debug:
+    msg: >-
+      FlashArray host object '{{ esxi_exec_pure_host }}'
+      ({{ 'set by pure_host_name' if (esxi_pure_host_override | length > 0)
+          else ('to be created' if (pure_host_to_create | bool)
+                else 'matched by ' ~ ('WWN' if (pure_fc_matches | length > 0) else 'IQN')) }};
+      ESXi WWNs {{ esxi_wwns | join(', ') | default('none', true) }},
+      IQNs {{ esxi_iqns | join(', ') | default('none', true) }}).
+
+- name: Warn when the configured host object holds none of the ESXi host's initiators
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: pure_host_name '{{ esxi_exec_pure_host }}' holds no initiator of ESXi host
+      '{{ esxi_exec_host }}'; the volume may not become visible on it.
+  when:
+    - esxi_pure_host_override | length > 0
+    - esxi_exec_pure_host not in (pure_fc_matches + pure_iscsi_matches)
+
+- name: "[DRY RUN] Host object that would be created"
+  ansible.builtin.debug:
+    msg: >-
+      Would create FlashArray host '{{ esxi_exec_pure_host }}' (personality esxi) with
+      {{ ('WWNs ' ~ (esxi_wwns | join(', '))) if (esxi_wwns | length > 0) else ('IQNs ' ~ (esxi_iqns | join(', '))) }}.
+  when:
+    - pure_host_to_create | bool
+    - dry_run | bool
+
+- name: Create the FlashArray host object
+  purestorage.flasharray.purefa_host:
+    name: "{{ esxi_exec_pure_host }}"
+    personality: esxi
+    wwns: "{{ esxi_wwns if (esxi_wwns | length > 0) else omit }}"
+    iqn: "{{ esxi_iqns if (esxi_wwns | length == 0) else omit }}"
+    fa_url: "{{ fa_url }}"
+    api_token: "{{ fa_api_token }}"
+    state: present
+  delegate_to: localhost
+  when:
+    - pure_host_to_create | bool
+    - not (dry_run | bool)

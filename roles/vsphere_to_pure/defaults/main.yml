@@ -9,9 +9,20 @@ vcenter_validate_certs: false
 pure_naa_prefix: "naa.624a9370"
 
 # ESXi host (member of the 'hypervisors' group) on which vmkfstools runs.
-# Defaults to the first hypervisor; ideally set to the host that owns the VM
-# and mounts the source datastore.
-target_esxi_host: "{{ groups['hypervisors'][0] }}"
+# Empty = auto-detect from the VM's placement in vCenter (see resolve_esxi_host.yml).
+# Set it only to force a specific host, which must mount the source datastore.
+target_esxi_host: ""
+
+# FlashArray host object for the ESXi host. Empty = find it by the ESXi host's
+# initiators (FC WWNs, then iSCSI IQN). Can be set per hypervisor in the inventory.
+pure_host_name: ""
+# When no host object holds those initiators: create one (true) or stop (false)
+pure_host_auto_create: true
+pure_host_create_name: "{{ esxi_exec_host }}"
+
+# FlashArray REST API used to list host objects
+fa_rest_version: "2.4"
+fa_validate_certs: false
 
 # Seconds to wait for the new FlashArray device to appear on ESXi
 device_wait_timeout: 60

@@ -25,8 +25,8 @@
       - "ACTION: migrate disk {{ disk_index }}"
       - "SOURCE: {{ full_vmdk_path }}"
       - "TARGET: FlashArray volume '{{ dest_vol_name }}' ({{ vol_size_gb }})"
-      - "HOST:   Pure host object '{{ pure_host_name }}'"
-      - "EXEC:   vmkfstools on ESXi '{{ target_esxi_host }}'"
+      - "HOST:   Pure host object '{{ esxi_exec_pure_host }}'{{ ' (to be created)' if (pure_host_to_create | bool) else '' }}"
+      - "EXEC:   vmkfstools on ESXi '{{ esxi_exec_host }}'"
   when: dry_run | bool
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@
 
     - name: "Disk {{ disk_index }} | Connect volume to ESXi host on FlashArray"
       purestorage.flasharray.purefa_host:
-        name: "{{ pure_host_name }}"
+        name: "{{ esxi_exec_pure_host }}"
         volume: "{{ dest_vol_name }}"
         fa_url: "{{ fa_url }}"
         api_token: "{{ fa_api_token }}"
@@ -71,7 +71,7 @@
         username: "{{ vcenter_username }}"
         password: "{{ vcenter_password }}"
         validate_certs: "{{ vcenter_validate_certs }}"
-        esxi_hostname: "{{ target_esxi_host }}"
+        esxi_hostname: "{{ esxi_exec_vcenter_name }}"
         refresh_storage: true
         rescan_hba: true
         rescan_vmfs: true
@@ -82,14 +82,14 @@
         path: "/vmfs/devices/disks/{{ vol_naa }}"
         timeout: "{{ device_wait_timeout }}"
         state: present
-      delegate_to: "{{ target_esxi_host }}"
+      delegate_to: "{{ esxi_exec_host }}"
 
     - name: "Disk {{ disk_index }} | Clone VMDK to FlashArray volume (XCOPY via RDM)"
       ansible.builtin.command: >-
         vmkfstools -i "{{ full_vmdk_path }}"
         -d rdmp:/vmfs/devices/disks/{{ vol_naa }}
         "{{ temp_rdm_path }}"
-      delegate_to: "{{ target_esxi_host }}"
+      delegate_to: "{{ esxi_exec_host }}"
       register: clone_out
       changed_when: clone_out.rc == 0
 
@@ -99,15 +99,27 @@
         msg: "Migration of disk {{ disk_index }} ({{ dest_vol_name }}) failed; cleanup ran in 'always'."
 
   always:
-    - name: "Disk {{ disk_index }} | Remove temporary RDM mapping file"
+    # An RDM is two files: the descriptor and its '-rdmp.vmdk' pointer. vmkfstools -U
+    # removes both; the file task below covers a half-created or already-detached RDM.
+    - name: "Disk {{ disk_index }} | Remove temporary RDM mapping"
+      ansible.builtin.command: vmkfstools -U "{{ temp_rdm_path }}"
+      delegate_to: "{{ esxi_exec_host }}"
+      register: rdm_remove
+      changed_when: rdm_remove.rc == 0
+      failed_when: false
+
+    - name: "Disk {{ disk_index }} | Remove leftover temporary RDM files"
       ansible.builtin.file:
-        path: "{{ temp_rdm_path }}"
+        path: "{{ item }}"
         state: absent
-      delegate_to: "{{ target_esxi_host }}"
+      delegate_to: "{{ esxi_exec_host }}"
+      loop:
+        - "{{ temp_rdm_path }}"
+        - "{{ temp_rdm_path | regex_replace('\\.vmdk$', '-rdmp.vmdk') }}"
 
     - name: "Disk {{ disk_index }} | Disconnect volume from ESXi host"
       purestorage.flasharray.purefa_host:
-        name: "{{ pure_host_name }}"
+        name: "{{ esxi_exec_pure_host }}"
         volume: "{{ dest_vol_name }}"
         fa_url: "{{ fa_url }}"
         api_token: "{{ fa_api_token }}"
@@ -120,7 +132,7 @@
         username: "{{ vcenter_username }}"
         password: "{{ vcenter_password }}"
         validate_certs: "{{ vcenter_validate_certs }}"
-        esxi_hostname: "{{ target_esxi_host }}"
+        esxi_hostname: "{{ esxi_exec_vcenter_name }}"
         refresh_storage: true
         rescan_hba: true
         rescan_vmfs: true

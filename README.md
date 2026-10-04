@@ -149,6 +149,8 @@ VMDK → a Cinder volume with a boot flag, etc.). The mapping design will land w
 | Cold-migration safety check (VM must be powered off) | ✅ Implemented |
 | Provision destination volumes on FlashArray | ✅ Implemented |
 | Present volume to ESXi, rescan, XCOPY clone via `vmkfstools` | ✅ Implemented |
+| Auto-detect the ESXi host from the VM's placement | ✅ Implemented |
+| Match the FlashArray host object by WWN/IQN, create it if absent | ✅ Implemented |
 | Cleanup (remove RDM, detach volume, final rescan) | ✅ Implemented |
 | Dry-run mode (plan without changing anything) | ✅ Implemented |
 | Cinder *manage existing* import of the landed volume | ✅ Implemented (`migrate_to_openstack.yaml`) |
@@ -164,7 +166,8 @@ VMDK → a Cinder volume with a boot flag, etc.). The mapping design will land w
   makes XCOPY offload possible). Cross-array copies still work but fall back to a normal, slower copy.
 - VAAI hardware acceleration enabled on the ESXi hosts.
 - SSH enabled on the target ESXi host (used to run `vmkfstools`).
-- A FlashArray **host or host-group object** already defined for the ESXi host (`pure_host_name`).
+- FC or iSCSI connectivity between the ESXi host and the FlashArray. The array **host object** is found
+  by the ESXi host's WWNs/IQN and created if absent (set `pure_host_name` to force a specific one).
 - A FlashArray **API token** with volume/host management rights.
 - A vCenter account that can read VM inventory and trigger storage rescans.
 
@@ -188,8 +191,9 @@ Per-role tunables are in each role's `defaults/main.yml`. Key variables:
 | `vcenter_datacenter` | Datacenter containing the target VM. |
 | `target_vm_name` | The VM to migrate. |
 | `fa_url` / `fa_api_token` | FlashArray management endpoint and API token. |
-| `pure_host_name` | FlashArray host/host-group object representing the ESXi host. |
-| `hypervisors` hosts | ESXi host(s) reachable over SSH for `vmkfstools`. |
+| `pure_host_name` | Optional: force a FlashArray host object. Empty (default) matches it by the ESXi host's WWNs/IQN and creates it if absent. |
+| `hypervisors` hosts | ESXi host(s) reachable over SSH for `vmkfstools`; the one hosting the VM is selected automatically. |
+| `target_esxi_host` | Optional: force a specific `hypervisors` member instead of auto-detection. |
 
 > ⚠️ Secrets (vCenter/ESXi passwords, FlashArray API token) belong in `vault.yml` encrypted with
 > **Ansible Vault** — never commit them in plaintext. `vault.yml` is git-ignored; only the
@@ -206,7 +210,7 @@ Ansible or its collections directly.
 docker build -t vsphere-os-migration .
 ```
 
-**2. Dry run** (safe — inspects vCenter and prints the plan, changes nothing):
+**2. Dry run** (safe — inspects vCenter and the FlashArray host list and prints the plan, changes nothing):
 
 ```bash
 docker run --rm -it \
@@ -241,9 +245,9 @@ node that has the collections installed.
 
 ## Limitations & known issues
 
-- **ESXi host selection is naive** — stage 1 uses `target_esxi_host` (defaults to the first host in
-  the `hypervisors` group) rather than auto-detecting the host that owns the VM / mounts the
-  datastore.
+- **ESXi host must be in the inventory** — stage 1 runs `vmkfstools` on the host vCenter reports for
+  the VM, so that host has to be listed in the `hypervisors` group (the run stops with a clear
+  message otherwise). `target_esxi_host` forces a specific host.
 - **Only "flat" VMDKs** (`FlatVer2` backing) are processed; RDMs, snapshots and other backing types
   are skipped.
 - **Guest-side adjustments** (drivers/initramfs, network config) after boot-from-volume are out of
@@ -251,7 +255,7 @@ node that has the collections installed.
 
 ## Roadmap
 
-- [ ] Detect the correct ESXi host automatically (from the VM's placement).
+- [x] Detect the correct ESXi host automatically (from the VM's placement).
 - [ ] Add `ansible-lint` / `yamllint` (+ CI).
 - [ ] Optional post-boot guest remediation (virtio/cloud-init) helpers.
 - [ ] Pin collection versions in `requirements.yml`.

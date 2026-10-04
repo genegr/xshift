@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      openssh-client ca-certificates \
+      openssh-client sshpass ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Python deps for the three stages:

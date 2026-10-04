@@ -18,8 +18,9 @@ target_vm_name: "lin-server01"
 # --- Pure FlashArray (stage 1) ---
 fa_url: "10.0.0.101"
 fa_api_token: "{{ vault_fa_api_token }}"
-# FlashArray host/host-group object representing the ESXi host
-pure_host_name: "esxi03"
+# FlashArray host object for the ESXi host. Leave empty to find it by the ESXi host's
+# initiators (WWNs/IQN), creating it if absent. Set it (here or per host in hosts.yml) to force one.
+pure_host_name: ""
 
 # --- OpenStack / Cinder (stage 2) ---
 # From: openstack volume service list  (Host + '#' + backend name)

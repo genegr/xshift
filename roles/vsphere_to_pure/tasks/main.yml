@@ -27,6 +27,12 @@
     - not (dry_run | bool)
     - vm_general_info.instance.hw_power_status != 'poweredOff'
 
+- name: Resolve the ESXi host that runs vmkfstools
+  ansible.builtin.include_tasks: resolve_esxi_host.yml
+
+- name: Resolve the FlashArray host object for that ESXi host
+  ansible.builtin.include_tasks: resolve_pure_host.yml
+
 - name: Gather VM disk information from vCenter
   community.vmware.vmware_guest_disk_info:
     hostname: "{{ vcenter_hostname }}"

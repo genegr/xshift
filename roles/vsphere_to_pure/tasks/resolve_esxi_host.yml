@@ -1,0 +1,88 @@
+---
+# Resolve the ESXi host on which vmkfstools runs (needs vm_general_info).
+# Default: the host vCenter reports for the VM. Override: target_esxi_host.
+# Sets: esxi_exec_host (inventory host), esxi_exec_vcenter_name, esxi_pure_host_override.
+
+- name: Determine the ESXi host to look up
+  ansible.builtin.set_fact:
+    vm_esxi_host: "{{ vm_general_info.instance.hw_esxi_host | default('', true) }}"
+    esxi_wanted: >-
+      {{ (target_esxi_host | default('', true)
+          or vm_general_info.instance.hw_esxi_host | default('', true)) | lower }}
+    esxi_auto_detected: "{{ (target_esxi_host | default('', true) | length) == 0 }}"
+    esxi_candidates: []
+
+- name: Fail if vCenter did not report the VM's ESXi host
+  ansible.builtin.fail:
+    msg: >-
+      vCenter returned no ESXi host for VM '{{ target_vm_name }}'.
+      Set target_esxi_host to a member of the 'hypervisors' group.
+  when: esxi_wanted | length == 0
+
+# A hypervisor is known by its inventory name, its ansible_host, or the optional
+# host var esxi_vcenter_name (the name vCenter uses, when it differs from both).
+- name: Collect the names of each inventory hypervisor
+  ansible.builtin.set_fact:
+    esxi_candidates: "{{ esxi_candidates + [{'host': item, 'names': names, 'short': names | map('regex_replace', '\\..*$', '') | unique | list}] }}"
+  vars:
+    names: >-
+      {{ [item,
+          hostvars[item].ansible_host | default(item),
+          hostvars[item].esxi_vcenter_name | default(item)] | map('lower') | unique | list }}
+  loop: "{{ groups['hypervisors'] | default([]) }}"
+
+# Exact name first; otherwise compare short hostnames (esxi03 vs esxi03.example.com),
+# which is never attempted for IP addresses.
+- name: Match the ESXi host against the inventory
+  ansible.builtin.set_fact:
+    esxi_matches: >-
+      {{ exact if (exact | length > 0 or wanted_is_ip) else short }}
+  vars:
+    wanted_is_ip: "{{ esxi_wanted is match('^[0-9]+(\\.[0-9]+){3}$') or ':' in esxi_wanted }}"
+    exact: "{{ esxi_candidates | selectattr('names', 'contains', esxi_wanted) | map(attribute='host') | list }}"
+    short: >-
+      {{ esxi_candidates | selectattr('short', 'contains', esxi_wanted | regex_replace('\..*$', ''))
+         | map(attribute='host') | list }}
+
+- name: Fail if the ESXi host is not exactly one inventory hypervisor
+  ansible.builtin.fail:
+    msg: >-
+      {{ 'VM ' ~ target_vm_name ~ ' runs on ESXi host' if (esxi_auto_detected | bool) else 'target_esxi_host is' }}
+      '{{ esxi_wanted }}', which matches
+      {{ 'no host' if (esxi_matches | length == 0) else 'several hosts (' ~ (esxi_matches | join(', ')) ~ ')' }}
+      in the 'hypervisors' inventory group
+      ({{ groups['hypervisors'] | default([]) | join(', ') | default('empty', true) }}).
+      Add the host to inventory/hosts.yml (its inventory name, ansible_host or
+      esxi_vcenter_name must equal the vCenter host name){{ ', or set target_esxi_host' if (esxi_auto_detected | bool) else '' }}.
+  when: esxi_matches | length != 1
+
+- name: Set the ESXi execution host
+  ansible.builtin.set_fact:
+    esxi_exec_host: "{{ chosen.host }}"
+    esxi_on_placement: "{{ on_placement }}"
+    # Name vCenter knows the host by (used for HBA rescans)
+    esxi_exec_vcenter_name: >-
+      {{ vm_esxi_host if on_placement
+         else hostvars[chosen.host].esxi_vcenter_name | default(target_esxi_host) }}
+    # Explicit FlashArray host object (per-hypervisor host var, else the shared one); empty = match by initiators
+    esxi_pure_host_override: "{{ hostvars[chosen.host].pure_host_name | default(pure_host_name, true) | default('', true) }}"
+  vars:
+    chosen: "{{ esxi_candidates | selectattr('host', 'equalto', esxi_matches[0]) | first }}"
+    on_placement: >-
+      {{ vm_esxi_host | length > 0
+         and ((vm_esxi_host | lower) in chosen.names
+              or (vm_esxi_host | lower | regex_replace('\..*$', '')) in chosen.short) }}
+
+- name: Report the ESXi execution host
+  ansible.builtin.debug:
+    msg: >-
+      vmkfstools will run on '{{ esxi_exec_host }}'
+      ({{ 'auto-detected from VM placement' if (esxi_auto_detected | bool) else 'target_esxi_host override' }};
+      vCenter name '{{ esxi_exec_vcenter_name }}').
+
+- name: Warn when the override is not the host the VM is placed on
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: target_esxi_host '{{ target_esxi_host }}' differs from the VM's placement
+      '{{ vm_esxi_host }}'. The override host must mount the source datastore.
+  when: not (esxi_on_placement | bool)

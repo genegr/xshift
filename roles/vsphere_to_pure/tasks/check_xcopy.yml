@@ -1,0 +1,117 @@
+---
+# XCOPY offload prerequisites (needs esxi_exec_host, esxi_hba_facts, vm_flat_disks).
+# ESXi only offloads a vmkfstools clone when DataMover.HardwareAcceleratedMove is
+# on and source and destination sit on the same array; otherwise it copies through
+# the host without saying so. The destination device's own VAAI clone status is
+# checked per disk in migrate_disk.yml, once the device is visible.
+# Sets: xcopy_problems (list of strings, empty when everything is in place).
+
+- name: Read DataMover.HardwareAcceleratedMove on the ESXi host
+  ansible.builtin.shell: >-
+    esxcli system settings advanced list -o /DataMover/HardwareAcceleratedMove
+    | sed -n 's/^ *Int Value: *//p'
+  delegate_to: "{{ esxi_exec_host }}"
+  register: esxi_datamover
+  changed_when: false
+
+- name: Map each source datastore to its backing devices
+  ansible.builtin.set_fact:
+    source_datastore_names: "{{ ds_names }}"
+    source_datastores: >-
+      {%- set out = {} -%}
+      {%- for m in mounts if (m.volume.name | default('')) in ds_names -%}
+      {%- set _ = out.update({m.volume.name: (m.volume.extent | default([]) | map(attribute='diskName') | list)}) -%}
+      {%- endfor -%}
+      {{ out }}
+  vars:
+    mounts: "{{ esxi_hba_facts.ansible_facts.config.fileSystemVolume.mountInfo | default([]) }}"
+    ds_names: >-
+      {{ vm_flat_disks | map(attribute='value.backing_filename')
+         | map('regex_replace', '^\[', '') | map('regex_replace', '\].*$', '')
+         | unique | list }}
+
+- name: Collect the FlashArray devices behind the source datastores
+  ansible.builtin.set_fact:
+    source_pure_devices: >-
+      {{ source_datastores.values() | flatten
+         | select('match', '^' ~ pure_naa_prefix) | unique | list }}
+
+- name: Look up the source datastores' volumes on the FlashArray
+  when: source_pure_devices | length > 0
+  block:
+    - name: Log in to the FlashArray REST API
+      ansible.builtin.uri:
+        url: "https://{{ fa_url }}/api/{{ fa_rest_version }}/login"
+        method: POST
+        headers:
+          api-token: "{{ fa_api_token }}"
+        validate_certs: "{{ fa_validate_certs }}"
+      delegate_to: localhost
+      register: fa_login_ds
+      no_log: true
+
+    # The serial is the NAA id without the Pure OUI prefix; the array stores it in upper case.
+    - name: Find the volume with each device's serial
+      ansible.builtin.uri:
+        url: "https://{{ fa_url }}/api/{{ fa_rest_version }}/volumes?filter={{ serial_filter | urlencode }}"
+        headers:
+          x-auth-token: "{{ fa_login_ds.x_auth_token }}"
+        validate_certs: "{{ fa_validate_certs }}"
+      vars:
+        serial_filter: "serial='{{ item[(pure_naa_prefix | length) :] | upper }}'"
+      delegate_to: localhost
+      register: fa_ds_volumes
+      loop: "{{ source_pure_devices }}"
+
+  always:
+    - name: Log out of the FlashArray REST API
+      ansible.builtin.uri:
+        url: "https://{{ fa_url }}/api/{{ fa_rest_version }}/logout"
+        method: POST
+        headers:
+          x-auth-token: "{{ fa_login_ds.x_auth_token }}"
+        validate_certs: "{{ fa_validate_certs }}"
+      delegate_to: localhost
+      when: fa_login_ds.x_auth_token is defined
+      failed_when: false
+      no_log: true
+
+- name: Evaluate the XCOPY prerequisites
+  ansible.builtin.set_fact:
+    xcopy_problems: >-
+      {%- set out = [] -%}
+      {%- if datamover != '1' -%}
+      {%- set _ = out.append('DataMover.HardwareAcceleratedMove is "' ~ datamover ~ '" on ' ~ esxi_exec_host ~ ' (must be 1)') -%}
+      {%- endif -%}
+      {%- for ds in source_datastore_names if ds not in source_datastores -%}
+      {%- set _ = out.append('datastore ' ~ ds ~ ' is not mounted on ' ~ esxi_exec_host) -%}
+      {%- endfor -%}
+      {%- for ds, devs in source_datastores.items() -%}
+      {%- for dev in devs if dev not in source_pure_devices -%}
+      {%- set _ = out.append('datastore ' ~ ds ~ ' extent ' ~ dev ~ ' is not a FlashArray device') -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- for r in fa_ds_volumes.results | default([]) if (r.json['items'] | default([]) | length) != 1 -%}
+      {%- set _ = out.append('device ' ~ r.item ~ ' is not a volume on ' ~ fa_url) -%}
+      {%- endfor -%}
+      {{ out }}
+  vars:
+    datamover: "{{ esxi_datamover.stdout | trim }}"
+
+- name: Report the XCOPY prerequisites
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'XCOPY prerequisites met: hardware-accelerated move is on and every source datastore ('
+         ~ (source_datastore_names | join(', ')) ~ ') is on ' ~ fa_url ~ '.'
+         if (xcopy_problems | length == 0)
+         else 'XCOPY prerequisites NOT met (the clone would copy through the host): '
+              ~ (xcopy_problems | join('; ')) }}
+
+- name: Stop when the XCOPY prerequisites are not met
+  ansible.builtin.fail:
+    msg: >-
+      {{ xcopy_problems | join('; ') }}.
+      Fix the above, or set xcopy_required=false to accept a host-side copy.
+  when:
+    - xcopy_required | bool
+    - xcopy_problems | length > 0

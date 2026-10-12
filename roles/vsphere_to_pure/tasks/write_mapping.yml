@@ -1,0 +1,26 @@
+---
+# Write a stage 2 mapping fragment from what vCenter reported (needs
+# vm_general_info, vm_flat_disks, vm_name_slug). Nothing here touches the array
+# or ESXi, so it runs on dry runs too. Review the file before using it.
+# The rendering lives in render_mapping.yml so that tests/logic can run it
+# without a vCenter.
+
+- name: Read firmware and sizing from vCenter
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    name: "{{ target_vm_name }}"
+    schema: vsphere
+    properties:
+      - config.firmware
+      - config.guestId
+      - config.hardware.numCPU
+      - config.hardware.memoryMB
+  delegate_to: localhost
+  register: vm_config_info
+
+- name: Render and write the mapping fragment
+  ansible.builtin.include_tasks: render_mapping.yml

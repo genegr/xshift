@@ -6,7 +6,7 @@
     msg: "DRY RUN MODE IS ENABLED. No volumes will be created or data copied."
   when: dry_run | bool
 
-- name: Get VM general information (power state)
+- name: Get VM general information (power state, NICs)
   community.vmware.vmware_guest_info:
     hostname: "{{ vcenter_hostname }}"
     username: "{{ vcenter_username }}"
@@ -27,11 +27,40 @@
     - not (dry_run | bool)
     - vm_general_info.instance.hw_power_status != 'poweredOff'
 
-- name: Resolve the ESXi host that runs vmkfstools
-  ansible.builtin.include_tasks: resolve_esxi_host.yml
+- name: Check the VM for snapshots
+  community.vmware.vmware_guest_snapshot_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    datacenter: "{{ vcenter_datacenter }}"
+    name: "{{ target_vm_name }}"
+  delegate_to: localhost
+  register: vm_snapshot_info
 
-- name: Resolve the FlashArray host object for that ESXi host
-  ansible.builtin.include_tasks: resolve_pure_host.yml
+- name: Fail if the VM has snapshots
+  ansible.builtin.fail:
+    msg: >-
+      VM '{{ target_vm_name }}' has {{ vm_snapshots | length }} snapshot(s):
+      {{ vm_snapshots | map(attribute='name') | join(', ') }}.
+      Its disks are delta files that cannot be cloned flat. Consolidate or delete
+      the snapshots first, or set fail_on_snapshots=false to migrate only the
+      disks that are still flat.
+  vars:
+    vm_snapshots: "{{ vm_snapshot_info.guest_snapshots.snapshots | default([]) }}"
+  when:
+    - fail_on_snapshots | bool
+    - vm_snapshots | length > 0
+
+# FlashArray names allow letters, digits and '-'. Everything else in the VM name
+# is folded to '-' so that 'Web Server 01' becomes 'web-server-01'.
+- name: Derive the FlashArray-safe name for this VM's volumes
+  ansible.builtin.set_fact:
+    vm_name_slug: >-
+      {{ target_vm_name | lower
+         | regex_replace('[^a-z0-9-]', '-')
+         | regex_replace('-{2,}', '-')
+         | regex_replace('^-|-$', '') }}
 
 - name: Gather VM disk information from vCenter
   community.vmware.vmware_guest_disk_info:
@@ -44,11 +73,59 @@
   delegate_to: localhost
   register: vm_disk_info
 
+# Only flat VMDKs (FlatVer2 backing) can be cloned onto a raw device. The vCenter
+# disk key ('0', '1', ...) names the destination volume, so skipped disks never
+# shift the numbering of the others.
+- name: Split disks into flat VMDKs and skipped backings
+  ansible.builtin.set_fact:
+    vm_disks: "{{ vm_disk_info.guest_disk_info | dict2items }}"
+    vm_flat_disks: >-
+      {{ vm_disk_info.guest_disk_info | dict2items
+         | selectattr('value.backing_type', 'search', 'FlatVer2') | list }}
+    vm_skipped_disks: >-
+      {{ vm_disk_info.guest_disk_info | dict2items
+         | rejectattr('value.backing_type', 'search', 'FlatVer2') | list }}
+
+- name: Report disks that will be skipped
+  ansible.builtin.debug:
+    msg: >-
+      SKIPPED disk {{ item.key }} ({{ item.value.backing_filename }}):
+      backing type '{{ item.value.backing_type }}' is not a flat VMDK.
+  loop: "{{ vm_skipped_disks }}"
+  loop_control:
+    label: "disk {{ item.key }}"
+
+- name: Fail when disks would be skipped
+  ansible.builtin.fail:
+    msg: >-
+      {{ vm_skipped_disks | length }} of {{ vm_disks | length }} disks of
+      '{{ target_vm_name }}' cannot be cloned (see SKIPPED above).
+      Set allow_skipped_disks=true to migrate only the flat VMDKs.
+  when:
+    - vm_skipped_disks | length > 0
+    - not (allow_skipped_disks | bool)
+
+- name: Fail when the VM has no flat VMDK to migrate
+  ansible.builtin.fail:
+    msg: "VM '{{ target_vm_name }}' has no flat VMDK to migrate."
+  when: vm_flat_disks | length == 0
+
+- name: Resolve the ESXi host that runs vmkfstools
+  ansible.builtin.include_tasks: resolve_esxi_host.yml
+
+- name: Resolve the FlashArray host object for that ESXi host
+  ansible.builtin.include_tasks: resolve_pure_host.yml
+
+- name: Check the XCOPY offload prerequisites
+  ansible.builtin.include_tasks: check_xcopy.yml
+
 - name: Process each flat VMDK for migration
   ansible.builtin.include_tasks: migrate_disk.yml
-  loop: "{{ vm_disk_info.guest_disk_info | dict2items }}"
+  loop: "{{ vm_flat_disks }}"
   loop_control:
     loop_var: disk_item
-    index_var: disk_index
-    label: "disk {{ disk_index }}"
-  when: "'FlatVer2' in disk_item.value.backing_type"
+    label: "disk {{ disk_item.key }}"
+
+- name: Write the stage 2 mapping fragment
+  ansible.builtin.include_tasks: write_mapping.yml
+  when: mapping_output_dir | default('', true) | length > 0

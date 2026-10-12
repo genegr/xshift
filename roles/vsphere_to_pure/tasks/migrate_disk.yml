@@ -1,20 +1,21 @@
 ---
-# Per-disk migration (loop_var: disk_item, index_var: disk_index)
+# Per-disk migration (loop_var: disk_item; disk_item.key is the vCenter disk key)
 
 # ---------------------------------------------------------------------------
 # 1. Calculation (always runs)
 # ---------------------------------------------------------------------------
-- name: "Disk {{ disk_index }} | Calculate parameters"
+- name: "Disk {{ disk_item.key }} | Calculate parameters"
   ansible.builtin.set_fact:
+    disk_index: "{{ disk_item.key }}"
     src_ds_name: "{{ disk_item.value.backing_filename.split(']')[0] | replace('[', '') }}"
     src_file_path: "{{ disk_item.value.backing_filename.split('] ')[1] }}"
     vol_size_gb: "{{ ((disk_item.value.capacity_in_kb | int) / 1048576) | round(0, 'ceil') | int }}G"
-    dest_vol_name: "{{ target_vm_name | lower }}-disk-{{ disk_index }}"
+    dest_vol_name: "{{ vm_name_slug }}-disk-{{ disk_item.key }}"
 
 - name: "Disk {{ disk_index }} | Build paths"
   ansible.builtin.set_fact:
     full_vmdk_path: "/vmfs/volumes/{{ src_ds_name }}/{{ src_file_path }}"
-    temp_rdm_path: "/vmfs/volumes/{{ src_ds_name }}/{{ target_vm_name }}_temp_{{ disk_index }}.vmdk"
+    temp_rdm_path: "/vmfs/volumes/{{ src_ds_name }}/{{ vm_name_slug }}_temp_{{ disk_index }}.vmdk"
 
 # ---------------------------------------------------------------------------
 # 2. Dry-run reporting
@@ -23,7 +24,7 @@
   ansible.builtin.debug:
     msg:
       - "ACTION: migrate disk {{ disk_index }}"
-      - "SOURCE: {{ full_vmdk_path }}"
+      - "SOURCE: {{ full_vmdk_path }} (datastore on {{ source_datastores[src_ds_name] | default(['unknown device']) | join(', ') }})"
       - "TARGET: FlashArray volume '{{ dest_vol_name }}' ({{ vol_size_gb }})"
       - "HOST:   Pure host object '{{ esxi_exec_pure_host }}'{{ ' (to be created)' if (pure_host_to_create | bool) else '' }}"
       - "EXEC:   vmkfstools on ESXi '{{ esxi_exec_host }}'"
@@ -36,34 +37,38 @@
   when: not (dry_run | bool)
   block:
     - name: "Disk {{ disk_index }} | Create volume on FlashArray"
-      purestorage.flasharray.purefa_volume:
+      everpure.flasharray.purefa_volume:
         name: "{{ dest_vol_name }}"
         size: "{{ vol_size_gb }}"
         fa_url: "{{ fa_url }}"
         api_token: "{{ fa_api_token }}"
         state: present
       delegate_to: localhost
+      register: vol_create
+
+    # purefa_volume returns the serial and NAA of the volume it created or found
+    # (collection >= 1.14), so there is no need to list every volume on the array.
+    - name: "Disk {{ disk_index }} | Fail if the volume module returned no serial"
+      ansible.builtin.fail:
+        msg: >-
+          purefa_volume returned no serial for '{{ dest_vol_name }}'; the FlashArray
+          collection is too old (see requirements.yml).
+      when: vol_create.volume[dest_vol_name].serial is not defined
+
+    - name: "Disk {{ disk_index }} | Compute volume NAA id"
+      ansible.builtin.set_fact:
+        vol_naa: >-
+          {{ vol_create.volume[dest_vol_name].page83_naa
+             | default(pure_naa_prefix ~ (vol_create.volume[dest_vol_name].serial | lower)) }}
 
     - name: "Disk {{ disk_index }} | Connect volume to ESXi host on FlashArray"
-      purestorage.flasharray.purefa_host:
+      everpure.flasharray.purefa_host:
         name: "{{ esxi_exec_pure_host }}"
         volume: "{{ dest_vol_name }}"
         fa_url: "{{ fa_url }}"
         api_token: "{{ fa_api_token }}"
         state: present
       delegate_to: localhost
-
-    - name: "Disk {{ disk_index }} | Get volume serial from FlashArray"
-      purestorage.flasharray.purefa_info:
-        gather_subset: volumes
-        fa_url: "{{ fa_url }}"
-        api_token: "{{ fa_api_token }}"
-      delegate_to: localhost
-      register: fa_info
-
-    - name: "Disk {{ disk_index }} | Compute volume NAA id"
-      ansible.builtin.set_fact:
-        vol_naa: "{{ pure_naa_prefix }}{{ fa_info.purefa_info.volumes[dest_vol_name].serial | lower }}"
 
     - name: "Disk {{ disk_index }} | Rescan HBAs on ESXi"
       community.vmware.vmware_host_scanhba:
@@ -84,6 +89,30 @@
         state: present
       delegate_to: "{{ esxi_exec_host }}"
 
+    # "supported" here means ESXi may offload the clone; "unsupported" means it will
+    # certainly copy through the host.
+    - name: "Disk {{ disk_index }} | Read the VAAI clone status of the new device"
+      ansible.builtin.shell: >-
+        esxcli storage core device vaai status get -d {{ vol_naa }}
+        | sed -n 's/^ *Clone Status: *//p'
+      delegate_to: "{{ esxi_exec_host }}"
+      register: vaai_status
+      changed_when: false
+
+    - name: "Disk {{ disk_index }} | Report the VAAI clone status"
+      ansible.builtin.debug:
+        msg: "VAAI clone status of {{ vol_naa }} on {{ esxi_exec_host }}: {{ vaai_status.stdout | trim | default('unknown', true) }}"
+
+    - name: "Disk {{ disk_index }} | Stop when the device does not support XCOPY"
+      ansible.builtin.fail:
+        msg: >-
+          Device {{ vol_naa }} reports VAAI clone status
+          '{{ vaai_status.stdout | trim | default('unknown', true) }}' on {{ esxi_exec_host }};
+          the clone would copy through the host. Set xcopy_required=false to accept that.
+      when:
+        - xcopy_required | bool
+        - (vaai_status.stdout | trim) != 'supported'
+
     - name: "Disk {{ disk_index }} | Clone VMDK to FlashArray volume (XCOPY via RDM)"
       ansible.builtin.command: >-
         vmkfstools -i "{{ full_vmdk_path }}"
@@ -93,10 +122,31 @@
       register: clone_out
       changed_when: clone_out.rc == 0
 
+    # The command module reports its wall time as H:MM:SS.ffffff in 'delta'.
+    - name: "Disk {{ disk_index }} | Compute clone duration"
+      ansible.builtin.set_fact:
+        clone_seconds: "{{ (parts[0] | int) * 3600 + (parts[1] | int) * 60 + (parts[2] | float) }}"
+      vars:
+        parts: "{{ (clone_out.delta | default('0:00:00')).split(':') }}"
+
+    - name: "Disk {{ disk_index }} | Report clone throughput"
+      ansible.builtin.debug:
+        msg: >-
+          Cloned {{ vol_size_gb }} from {{ full_vmdk_path }} in {{ clone_seconds | float | round(1) }} s,
+          about {{ clone_mib_s }} MiB/s.{{ ' WARNING: below xcopy_min_throughput_mib=' ~ xcopy_min_throughput_mib
+          ~ '; the copy probably went through the host. Check the esxtop VAAI counters.' if (slow | bool) else '' }}
+      vars:
+        clone_mib_s: "{{ ((disk_item.value.capacity_in_kb | int) / 1024 / ([clone_seconds | float, 0.001] | max)) | round(0) | int }}"
+        slow: "{{ (xcopy_min_throughput_mib | int) > 0 and (clone_mib_s | int) < (xcopy_min_throughput_mib | int) }}"
+
   rescue:
     - name: "Disk {{ disk_index }} | Migration FAILED"
       ansible.builtin.fail:
-        msg: "Migration of disk {{ disk_index }} ({{ dest_vol_name }}) failed; cleanup ran in 'always'."
+        msg: >-
+          Migration of disk {{ disk_index }} ({{ dest_vol_name }}) failed in task
+          '{{ ansible_failed_task.name | default('?') }}':
+          {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('no message')) }}.
+          The temporary RDM and the host connection are cleaned up in 'always'.
 
   always:
     # An RDM is two files: the descriptor and its '-rdmp.vmdk' pointer. vmkfstools -U
@@ -118,7 +168,7 @@
         - "{{ temp_rdm_path | regex_replace('\\.vmdk$', '-rdmp.vmdk') }}"
 
     - name: "Disk {{ disk_index }} | Disconnect volume from ESXi host"
-      purestorage.flasharray.purefa_host:
+      everpure.flasharray.purefa_host:
         name: "{{ esxi_exec_pure_host }}"
         volume: "{{ dest_vol_name }}"
         fa_url: "{{ fa_url }}"

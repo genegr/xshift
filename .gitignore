@@ -25,6 +25,10 @@ id_ed25519
 # Environment-specific (use the .example templates instead)
 mapping.yaml
 
+# Written by stage 1 for stage 2 (mapping-<vm>.yaml)
+generated/
+tests/logic/out/
+
 # Local run artifacts
 *.log
 tmp_*

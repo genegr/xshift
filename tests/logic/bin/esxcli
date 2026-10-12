@@ -1,0 +1,15 @@
+#!/bin/sh
+# Fake esxcli for tests/logic: answers the two read-only queries the roles make.
+# FAKE_DATAMOVER (default 1) and FAKE_CLONE_STATUS (default supported) shape the answers.
+case "$*" in
+  *HardwareAcceleratedMove*)
+    printf '   Path: /DataMover/HardwareAcceleratedMove\n   Type: integer\n   Int Value: %s\n   Default Int Value: 1\n   Min Value: 0\n   Max Value: 1\n' "${FAKE_DATAMOVER:-1}"
+    ;;
+  *"vaai status get"*)
+    printf 'naa.fake\n   VAAI Plugin Name: \n   ATS Status: supported\n   Clone Status: %s\n   Zero Status: supported\n   Delete Status: supported\n' "${FAKE_CLONE_STATUS:-supported}"
+    ;;
+  *)
+    echo "fake esxcli: unexpected arguments: $*" >&2
+    exit 1
+    ;;
+esac

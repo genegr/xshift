@@ -1,0 +1,243 @@
+---
+# Logic tests that need neither vCenter, a FlashArray nor OpenStack. The role
+# task files run as they are; esxcli and openstack are the fakes in tests/logic/bin.
+#   ansible-playbook tests/logic/test.yml
+- name: Role logic tests
+  hosts: localhost
+  gather_facts: false
+  vars:
+    role_dir: "{{ playbook_dir }}/../../roles"
+    fa_url: "array.example"
+    pure_naa_prefix: "naa.624a9370"
+    esxi_exec_host: localhost
+    cinder_pure_host: "host@pure#pure"
+    cinder_api_version: "3.8"
+    dry_run: true
+    fake_datamover: "1"
+    fake_missing_network: ""
+    fake_unmanaged: ""
+    fake_manageable: []
+    # Two flat disks on datastore ds1
+    vm_flat_disks:
+      - key: "0"
+        value: {backing_filename: "[ds1] vm/vm.vmdk", backing_type: "FlatVer2", capacity_in_kb: 41943040}
+      - key: "2"
+        value: {backing_filename: "[ds1] vm/vm_1.vmdk", backing_type: "FlatVer2", capacity_in_kb: 10485761}
+  environment:
+    PATH: "{{ playbook_dir }}/bin:{{ lookup('env', 'PATH') }}"
+    FAKE_DATAMOVER: "{{ fake_datamover }}"
+    FAKE_MISSING_NETWORK: "{{ fake_missing_network }}"
+    FAKE_UNMANAGED: "{{ fake_unmanaged }}"
+    FAKE_MANAGEABLE_JSON: "{{ fake_manageable | to_json }}"
+  tasks:
+
+    # ---------------- stage 1: volume name slug ----------------
+    - name: VM names fold to FlashArray-safe names
+      ansible.builtin.assert:
+        that:
+          - (item.0 | lower | regex_replace('[^a-z0-9-]', '-') | regex_replace('-{2,}', '-') | regex_replace('^-|-$', '')) == item.1
+        quiet: true
+      loop:
+        - ["Web Server 01", "web-server-01"]
+        - ["lin-server01", "lin-server01"]
+        - ["db.prod_02 (old)", "db-prod-02-old"]
+
+    # ---------------- stage 1: XCOPY prerequisites ----------------
+    - name: XCOPY | datastore extent on another array is reported
+      vars:
+        xcopy_required: false
+        esxi_hba_facts:
+          ansible_facts:
+            config:
+              fileSystemVolume:
+                mountInfo:
+                  - volume: {name: "ds1", extent: [{diskName: "naa.600a098038304437"}]}
+                  - volume: {name: "nfs1"}
+      block:
+        - name: Run check_xcopy.yml
+          ansible.builtin.include_tasks: "{{ role_dir }}/vsphere_to_pure/tasks/check_xcopy.yml"
+        - name: Verify
+          ansible.builtin.assert:
+            that:
+              - source_datastore_names == ['ds1']
+              - "source_datastores == {'ds1': ['naa.600a098038304437']}"
+              - source_pure_devices == []
+              - xcopy_problems == ['datastore ds1 extent naa.600a098038304437 is not a FlashArray device']
+            quiet: true
+
+    - name: XCOPY | datastore not mounted and DataMover off are both reported, and stop the run
+      vars:
+        xcopy_required: true
+        fake_datamover: "0"
+        esxi_hba_facts:
+          ansible_facts:
+            config:
+              fileSystemVolume:
+                mountInfo:
+                  - volume: {name: "other", extent: [{diskName: "naa.624a9370aaaaaaaaaaaaaaaa00011111"}]}
+      block:
+        - name: Run check_xcopy.yml
+          ansible.builtin.include_tasks: "{{ role_dir }}/vsphere_to_pure/tasks/check_xcopy.yml"
+        - name: Should not get here
+          ansible.builtin.fail:
+            msg: "check_xcopy.yml did not stop with xcopy_required=true"
+      rescue:
+        - name: Verify
+          ansible.builtin.assert:
+            that:
+              - xcopy_problems | length == 2
+              - "'DataMover.HardwareAcceleratedMove is \"0\" on localhost (must be 1)' in xcopy_problems"
+              - "'datastore ds1 is not mounted on localhost' in xcopy_problems"
+              - ansible_failed_task.name == 'Stop when the XCOPY prerequisites are not met'
+            quiet: true
+
+    # ---------------- stage 1: clone duration parsing ----------------
+    - name: Clone duration from the command module's delta
+      ansible.builtin.assert:
+        that:
+          - ((parts[0] | int) * 3600 + (parts[1] | int) * 60 + (parts[2] | float)) | round(3) == 3725.5
+        quiet: true
+      vars:
+        parts: "{{ '1:02:05.500000'.split(':') }}"
+
+    # ---------------- stage 1: mapping fragment ----------------
+    - name: Mapping | render from fake vCenter facts
+      vars:
+        target_vm_name: "Lin Server01"
+        vm_name_slug: "lin-server01"
+        boot_disk_index: 0
+        mapping_output_dir: "{{ playbook_dir }}/out"
+        vm_general_info:
+          instance:
+            hw_eth1: {portgroup: "VM Network 2"}
+            hw_eth0: {portgroup: "VM Network"}
+            hw_power_status: "poweredOff"
+        vm_config_info:
+          instance:
+            config:
+              firmware: "efi"
+              guestId: "ubuntu64Guest"
+              hardware: {numCPU: 4, memoryMB: 8192}
+      block:
+        - name: Run render_mapping.yml
+          ansible.builtin.include_tasks: "{{ role_dir }}/vsphere_to_pure/tasks/render_mapping.yml"
+        - name: Read the file back
+          ansible.builtin.slurp:
+            src: "{{ playbook_dir }}/out/mapping-lin-server01.yaml"
+          register: mapping_file
+        - name: Verify
+          ansible.builtin.assert:
+            that:
+              - mapping.vm_migrations | length == 1
+              - mapping.vm_migrations[0].name == 'Lin Server01'
+              - mapping.vm_migrations[0].vcpus == 4
+              - mapping.vm_migrations[0].ram_mb == 8192
+              - "mapping.vm_migrations[0].networks == [{'network': 'VM Network'}, {'network': 'VM Network 2'}]"
+              - mapping.vm_migrations[0].disks | length == 2
+              - mapping.vm_migrations[0].disks[0].pure_volume == 'lin-server01-disk-0'
+              - mapping.vm_migrations[0].disks[0].boot
+              - mapping.vm_migrations[0].disks[0].size_gb == 40
+              - mapping.vm_migrations[0].disks[0].image_properties.hw_firmware_type == 'uefi'
+              - mapping.vm_migrations[0].disks[1].pure_volume == 'lin-server01-disk-2'
+              - not mapping.vm_migrations[0].disks[1].boot
+              - mapping.vm_migrations[0].disks[1].size_gb == 11
+              - "'image_properties' not in mapping.vm_migrations[0].disks[1]"
+            quiet: true
+          vars:
+            mapping: "{{ mapping_file.content | b64decode | from_yaml }}"
+        - name: Remove the test output
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/out"
+            state: absent
+
+    # ---------------- stage 2: mapping validation ----------------
+    - name: Validate | everything present, one volume still to manage
+      vars:
+        fake_unmanaged: "vm1-disk-1"
+        fake_manageable:
+          - reference: {name: "vm1-disk-1"}
+            size: 10
+            safe_to_manage: true
+            reason_not_safe: null
+            cinder_id: null
+            extra_info: null
+        vm:
+          name: "vm1"
+          flavor: "m1.small"
+          networks: [{network: "net-a"}]
+          disks:
+            - {pure_volume: "vm1-disk-0", boot: true}
+            - {pure_volume: "vm1-disk-1", boot: false}
+      block:
+        - name: Run validate_vm.yml
+          ansible.builtin.include_tasks: "{{ role_dir }}/pure_to_openstack/tasks/validate_vm.yml"
+        - name: Verify
+          ansible.builtin.assert:
+            that:
+              - vm_problems == []
+              - vm_managed_volumes == ['vm1-disk-0']
+              - vm_unmanaged_volumes == ['vm1-disk-1']
+            quiet: true
+
+    - name: Validate | missing network, unmanageable volume and unknown volume stop the run
+      vars:
+        fake_missing_network: "net-b"
+        fake_unmanaged: "vm2-disk-0 vm2-disk-1"
+        fake_manageable:
+          - reference: {name: "vm2-disk-0"}
+            size: 10
+            safe_to_manage: false
+            reason_not_safe: "Volume connected to host esx1"
+            cinder_id: null
+            extra_info: null
+        vm:
+          name: "vm2"
+          flavor_auto: true
+          vcpus: 2
+          ram_mb: 2048
+          networks: [{network: "net-a"}, {network: "net-b"}]
+          disks:
+            - {pure_volume: "vm2-disk-0", boot: true}
+            - {pure_volume: "vm2-disk-1"}
+      block:
+        - name: Run validate_vm.yml
+          ansible.builtin.include_tasks: "{{ role_dir }}/pure_to_openstack/tasks/validate_vm.yml"
+        - name: Should not get here
+          ansible.builtin.fail:
+            msg: "validate_vm.yml did not stop on problems"
+      rescue:
+        - name: Verify
+          ansible.builtin.assert:
+            that:
+              - vm_problems | length == 3
+              - "'network net-b not found' in vm_problems"
+              - "'volume vm2-disk-0 is not safe to manage: Volume connected to host esx1' in vm_problems"
+              - "'volume vm2-disk-1 is neither a Cinder volume nor manageable on host@pure#pure' in vm_problems"
+              - ansible_failed_task.name == 'vm2 | Stop on mapping problems'
+            quiet: true
+
+    - name: Validate | a mapping entry with two boot disks is rejected before any lookup
+      vars:
+        vm:
+          name: "vm3"
+          flavor: "m1.small"
+          networks: [{network: "net-a"}]
+          disks:
+            - {pure_volume: "vm3-disk-0", boot: true}
+            - {pure_volume: "vm3-disk-1", boot: true}
+      block:
+        - name: Run validate_vm.yml
+          ansible.builtin.include_tasks: "{{ role_dir }}/pure_to_openstack/tasks/validate_vm.yml"
+        - name: Should not get here
+          ansible.builtin.fail:
+            msg: "validate_vm.yml accepted two boot disks"
+      rescue:
+        - name: Verify
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name == 'vm3 | Check the mapping entry'
+            quiet: true
+
+    - name: All logic tests passed
+      ansible.builtin.debug:
+        msg: "OK"

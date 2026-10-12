@@ -1,0 +1,6 @@
+# Python packages for the runner image (Dockerfile). Exact pins; bump deliberately.
+ansible-core==2.18.19
+openstacksdk==4.21.0
+python-openstackclient==10.4.0
+pyvmomi==9.1.1.0
+py-pure-client==1.96.0

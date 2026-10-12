@@ -1,9 +1,9 @@
 ---
 # Stage 1: vSphere -> Pure FlashArray (XCOPY). Logic lives in roles/vsphere_to_pure.
-#   Dry run (default):  ansible-playbook migrate_vm.yaml
-#   Execute:            ansible-playbook migrate_vm.yaml -e "dry_run=false"
+#   Dry run (default):  ansible-playbook migrate_vm.yaml --ask-vault-pass
+#   Execute:            ansible-playbook migrate_vm.yaml --ask-vault-pass -e "dry_run=false"
 - name: "Stage 1 - clone VM disks to Pure FlashArray volumes"
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
   roles:
     - vsphere_to_pure

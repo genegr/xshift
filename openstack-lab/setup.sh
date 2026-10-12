@@ -5,7 +5,7 @@
 # is deployed to openstack00 over SSH. Run the numbered blocks from the dev box.
 #
 # This is a runbook: read it, set the vars, run block by block. It is NOT fully
-# idempotent end to end.
+# idempotent end to end. Addresses are placeholders.
 # =============================================================================
 set -euo pipefail
 
@@ -13,7 +13,7 @@ set -euo pipefail
 TARGET_IP="172.17.20.101"          # openstack00 management IP (network_interface = ens34)
 TARGET_USER="ubuntu"
 SSH_KEY="$HOME/.ssh/id_rsa"        # key that authenticates as ubuntu@openstack00
-PURE_SAN_IP="10.225.112.90"
+PURE_SAN_IP="192.0.2.90"           # FlashArray management IP (placeholder)
 PURE_API_TOKEN="REPLACE_ME"        # do NOT commit; goes into passwords.yml only
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -37,9 +37,10 @@ ansible_become=true
 ansible_ssh_private_key_file=/config/ssh/id_rsa
 ansible_ssh_common_args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 EOF'
-# 2b. our overrides + cinder default-type override
-sudo docker run --rm -i -v kolla-config:/config kolla-deployer:2026.1 \
-  bash -c 'cat >> /config/etc-kolla/globals.yml' < "$HERE/globals.overrides.yml"
+# 2b. our overrides + cinder default-type override (pure_san_ip from this script)
+sed "s/^pure_san_ip: .*/pure_san_ip: \"$PURE_SAN_IP\"/" "$HERE/globals.overrides.yml" | \
+  sudo docker run --rm -i -v kolla-config:/config kolla-deployer:2026.1 \
+    bash -c 'cat >> /config/etc-kolla/globals.yml'
 sudo docker run --rm -i -v kolla-config:/config kolla-deployer:2026.1 \
   bash -c 'cat > /config/etc-kolla/config/cinder.conf' < "$HERE/config/cinder.conf"
 # 2c. ssh key into the volume

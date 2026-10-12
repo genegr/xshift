@@ -10,18 +10,19 @@
       - vm_migrations | length > 0
     fail_msg: "No 'vm_migrations' found. Provide a mapping file (see mapping.example.yaml)."
 
-- name: "[DRY RUN] Show migration plan"
+- name: "Status Check: Dry Run Mode"
   ansible.builtin.debug:
-    msg: >-
-      Would migrate '{{ item.name }}':
-      flavor={{ item.flavor | default('auto') }},
-      networks={{ item.networks | map(attribute='network') | list }},
-      boot={{ item.disks | selectattr('boot', 'defined') | selectattr('boot') | map(attribute='pure_volume') | list }},
-      data={{ item.disks | rejectattr('boot', 'defined') | map(attribute='pure_volume') | list }}
+    msg: "DRY RUN MODE IS ENABLED. The mapping is validated against OpenStack; nothing is changed."
+  when: dry_run | bool
+
+# Every entry is checked against OpenStack (flavor, networks, volumes managed or
+# manageable) before anything is imported, on dry runs and real runs alike.
+- name: Validate each VM mapping against OpenStack
+  ansible.builtin.include_tasks: validate_vm.yml
   loop: "{{ vm_migrations }}"
   loop_control:
-    label: "{{ item.name }}"
-  when: dry_run | bool
+    loop_var: vm
+    label: "{{ vm.name | default('?') }}"
 
 - name: Import and boot each VM
   ansible.builtin.include_tasks: import_vm.yml

@@ -1,0 +1,110 @@
+---
+# Per-VM validation (loop_var: vm). Checks the shape of the mapping entry, then
+# that the flavor and networks exist and that every volume is either already a
+# Cinder volume or listed by Cinder as manageable on cinder_pure_host.
+# Read-only; runs on dry runs and before a real import.
+
+- name: "{{ vm.name | default('?') }} | Check the mapping entry"
+  ansible.builtin.assert:
+    that:
+      - vm.name is defined
+      - vm.disks is defined
+      - vm.disks | length > 0
+      - vm.disks | selectattr('boot', 'defined') | selectattr('boot') | list | length == 1
+      - vm.networks is defined
+      - vm.networks | length > 0
+      - (vm.flavor_auto | default(false) | bool) or (vm.flavor | default('') | length > 0)
+      - not (vm.flavor_auto | default(false) | bool) or (vm.vcpus is defined and vm.ram_mb is defined)
+    fail_msg: >-
+      Mapping entry '{{ vm.name | default('?') }}' needs at least one disk with exactly one
+      'boot: true', at least one network, and either 'flavor' or 'flavor_auto: true' with
+      vcpus and ram_mb.
+    quiet: true
+
+- name: "{{ vm.name }} | Look up the flavor"
+  ansible.builtin.command: "openstack flavor show {{ vm.flavor | quote }} -f value -c id"
+  register: flavor_check
+  changed_when: false
+  failed_when: false
+  when: not (vm.flavor_auto | default(false) | bool)
+
+- name: "{{ vm.name }} | Look up the networks"
+  ansible.builtin.command: "openstack network show {{ item.network | quote }} -f value -c id"
+  register: network_check
+  changed_when: false
+  failed_when: false
+  loop: "{{ vm.networks }}"
+  loop_control:
+    label: "{{ item.network }}"
+
+- name: "{{ vm.name }} | Look up the volumes in Cinder"
+  ansible.builtin.command: "openstack volume show {{ item.pure_volume | quote }} -f value -c status"
+  register: volume_check
+  changed_when: false
+  failed_when: false
+  loop: "{{ vm.disks }}"
+  loop_control:
+    label: "{{ item.pure_volume }}"
+
+# Cinder asks the Pure driver which array volumes it could manage: those that are
+# not connected to any host and not already Cinder volumes.
+- name: "{{ vm.name }} | List the volumes Cinder could manage on the backend"
+  ansible.builtin.command: >-
+    openstack --os-volume-api-version {{ cinder_api_version }}
+    block storage volume manageable list --host {{ cinder_pure_host | quote }} --long -f json
+  register: manageable_list
+  changed_when: false
+  failed_when: false
+  when: volume_check.results | selectattr('rc', 'ne', 0) | list | length > 0
+
+- name: "{{ vm.name }} | Evaluate the mapping against OpenStack"
+  ansible.builtin.set_fact:
+    vm_problems: >-
+      {%- set out = [] -%}
+      {%- if flavor_check is not skipped and flavor_check.rc != 0 -%}
+      {%- set _ = out.append('flavor ' ~ vm.flavor ~ ' not found') -%}
+      {%- endif -%}
+      {%- for r in network_check.results if r.rc != 0 -%}
+      {%- set _ = out.append('network ' ~ r.item.network ~ ' not found') -%}
+      {%- endfor -%}
+      {%- if manageable_list is not skipped and manageable_list.rc != 0 -%}
+      {%- set _ = out.append('could not list manageable volumes on ' ~ cinder_pure_host
+                             ~ ': ' ~ (manageable_list.stderr | trim)) -%}
+      {%- else -%}
+      {%- for r in volume_check.results if r.rc != 0 -%}
+      {%- set m = manageable | selectattr('reference.name', 'defined')
+                  | selectattr('reference.name', 'equalto', r.item.pure_volume) | list -%}
+      {%- if m | length == 0 -%}
+      {%- set _ = out.append('volume ' ~ r.item.pure_volume
+                             ~ ' is neither a Cinder volume nor manageable on ' ~ cinder_pure_host) -%}
+      {%- elif not (m[0].safe_to_manage | default(false)) -%}
+      {%- set _ = out.append('volume ' ~ r.item.pure_volume ~ ' is not safe to manage: '
+                             ~ (m[0].reason_not_safe | default('no reason given'))) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ out }}
+    vm_managed_volumes: "{{ volume_check.results | selectattr('rc', 'eq', 0) | map(attribute='item.pure_volume') | list }}"
+    vm_unmanaged_volumes: "{{ volume_check.results | selectattr('rc', 'ne', 0) | map(attribute='item.pure_volume') | list }}"
+  vars:
+    manageable: >-
+      {{ (manageable_list.stdout | from_json)
+         if (manageable_list is not skipped and manageable_list.rc == 0 and (manageable_list.stdout | trim | length) > 0)
+         else [] }}
+
+- name: "{{ vm.name }} | Plan"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Would migrate' if (dry_run | bool) else 'Migrating' }} '{{ vm.name }}':
+      flavor={{ ('migrated-' ~ vm.name ~ ' (auto)') if (vm.flavor_auto | default(false) | bool) else vm.flavor }},
+      networks={{ vm.networks | map(attribute='network') | list }},
+      boot={{ vm.disks | selectattr('boot', 'defined') | selectattr('boot') | map(attribute='pure_volume') | list }},
+      data={{ vm.disks | map(attribute='pure_volume') | list
+              | difference(vm.disks | selectattr('boot', 'defined') | selectattr('boot') | map(attribute='pure_volume') | list) }},
+      already managed={{ vm_managed_volumes }}, to manage={{ vm_unmanaged_volumes }}.
+      {{ ('PROBLEMS: ' ~ (vm_problems | join('; '))) if (vm_problems | length > 0) else 'All lookups succeeded.' }}
+
+- name: "{{ vm.name }} | Stop on mapping problems"
+  ansible.builtin.fail:
+    msg: "{{ vm_problems | join('; ') }}"
+  when: vm_problems | length > 0

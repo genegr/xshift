@@ -66,13 +66,13 @@ can *manage* the existing backend volume in place.
                         | (VM & disk inventory, snapshots,          |
                         |  power state, HBA rescan)                 |
                         |                                           |
-   +--------------------+----------+     SSH (vmkfstools,   +-------+--------------+
-   |  Ansible control node         |      esxcli)          |      ESXi host       |
+   +--------------------+----------+     SSH (vmkfstools,  +--------+--------------+
+   |  Ansible control node         |      esxcli)          |      ESXi host        |
    |  (this project, in Docker)    |---------------------->|  (mounts the VMFS     |
    |                               |                       |   datastore + volume) |
-   |  community.vmware             |                       +----------+-----------+
-   |  everpure.flasharray          |                                  |
-   |  openstack.cloud + CLI        |    REST API                      | VAAI XCOPY
+   |  community.vmware             |                       +-----------+-----------+
+   |  everpure.flasharray          |                                   |
+   |  openstack.cloud + CLI        |    REST API                       | VAAI XCOPY
    +---------------+---------------+----------------+                  | (block copy,
                    |                                |                  |  array-internal)
                    | REST API                       v                  v

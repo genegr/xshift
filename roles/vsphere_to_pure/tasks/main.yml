@@ -34,7 +34,8 @@
     password: "{{ vcenter_password }}"
     validate_certs: "{{ vcenter_validate_certs }}"
     datacenter: "{{ vcenter_datacenter }}"
-    name: "{{ target_vm_name }}"
+    # By UUID: with a name this module also requires the VM's folder
+    uuid: "{{ vm_general_info.instance.hw_product_uuid }}"
   delegate_to: localhost
   register: vm_snapshot_info
 

@@ -25,12 +25,19 @@
                        'source_guest_id': vm_config_info.instance.config.guestId | default('')}} }}
   vars:
     firmware: "{{ 'uefi' if (vm_config_info.instance.config.firmware | default('bios')) == 'efi' else 'bios' }}"
-    # hw_ethN entries of vmware_guest_info, in NIC order; the portgroup name is
-    # copied verbatim and has to be mapped to a Neutron network by hand.
+    # hw_ethN entries of vmware_guest_info, in NIC order; the network is copied
+    # verbatim and has to be mapped to a Neutron network by hand. vmware_guest_info
+    # has no portgroup name field: a standard-switch NIC carries the network name in
+    # 'summary', a distributed-switch NIC the portgroup key (summary is the switch).
     vm_portgroups: >-
-      {{ vm_general_info.instance | dict2items
-         | selectattr('key', 'match', '^hw_eth[0-9]+$')
-         | sort(attribute='key') | map(attribute='value.portgroup') | list }}
+      {%- set out = [] -%}
+      {%- for nic in vm_general_info.instance | dict2items
+                     | selectattr('key', 'match', '^hw_eth[0-9]+$') | sort(attribute='key') -%}
+      {%- set v = nic.value -%}
+      {%- set _ = out.append(v.portgroup | default(v.portgroup_key, true)
+                             | default(v.summary, true) | default(nic.key, true)) -%}
+      {%- endfor -%}
+      {{ out }}
     vm_mapping_networks: >-
       {%- set out = [] -%}
       {%- for pg in vm_portgroups -%}

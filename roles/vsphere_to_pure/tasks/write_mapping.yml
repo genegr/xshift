@@ -16,6 +16,7 @@
     schema: vsphere
     properties:
       - config.firmware
+      - config.bootOptions.efiSecureBootEnabled
       - config.guestId
       - config.hardware.numCPU
       - config.hardware.memoryMB

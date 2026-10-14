@@ -29,10 +29,11 @@
   loop_control:
     label: "{{ item.item.pure_volume }}"
 
+# 'in-use' also ends the wait: on a re-run the instance already holds its volumes.
 - name: "{{ vm.name }} | Wait for managed volumes to become available"
   ansible.builtin.command: "openstack volume show {{ item.pure_volume | quote }} -f value -c status"
   register: vol_status
-  until: (vol_status.stdout | trim) in (['available'] + volume_error_states)
+  until: (vol_status.stdout | trim) in (['available', 'in-use'] + volume_error_states)
   retries: "{{ volume_available_retries }}"
   delay: "{{ volume_available_delay }}"
   changed_when: false
@@ -52,20 +53,56 @@
     label: "{{ item.item.pure_volume }}"
 
 # 2. Image properties: Nova takes firmware, disk bus and NIC model for a
-#    boot-from-volume instance from the volume's image metadata.
-- name: "{{ vm.name }} | Set image properties on the volumes"
-  ansible.builtin.command: >-
-    openstack volume set {{ item.pure_volume | quote }}
-    {% for k, v in props.items() %}--image-property {{ (k ~ '=' ~ v) | quote }} {% endfor %}
-  vars:
-    props: >-
-      {{ (default_boot_image_properties if (item.boot | default(false) | bool) else {})
-         | combine(item.image_properties | default({})) }}
-  when: props | length > 0
+#    boot-from-volume instance from the volume's image metadata, once, when the
+#    instance is created. Only missing or different values are written, and only
+#    while the volume is not attached yet; later differences are reported.
+- name: "{{ vm.name }} | Read the volumes' image metadata"
+  ansible.builtin.command: "openstack volume show {{ item.pure_volume | quote }} -f json"
+  register: vol_meta
+  changed_when: false
   loop: "{{ vm.disks }}"
   loop_control:
     label: "{{ item.pure_volume }}"
-  changed_when: true
+
+- name: "{{ vm.name }} | Set image properties on the volumes"
+  ansible.builtin.command: >-
+    openstack volume set {{ item.item.pure_volume | quote }}
+    {% for k, v in props.items() %}--image-property {{ (k ~ '=' ~ v) | quote }} {% endfor %}
+  vars:
+    vol: "{{ item.stdout | from_json }}"
+    current: "{{ vol.volume_image_metadata | default({}, true) }}"
+    props: >-
+      {{ (default_boot_image_properties if (item.item.boot | default(false) | bool) else {})
+         | combine(item.item.image_properties | default({})) }}
+    props_s: "{{ dict(props.keys() | zip(props.values() | map('string'))) }}"
+  when:
+    - props | length > 0
+    - (current | combine(props_s)) != current
+    - vol.status == 'available'
+  loop: "{{ vol_meta.results }}"
+  loop_control:
+    label: "{{ item.item.pure_volume }}"
+
+- name: "{{ vm.name }} | Warn about image properties that can no longer take effect"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: volume {{ item.item.pure_volume }} is {{ vol.status }} and its image metadata
+      differs from the mapping ({{ props }}); Nova applies these only when the instance is
+      created. Delete the instance (the volume is kept) and re-run to apply them.
+  vars:
+    vol: "{{ item.stdout | from_json }}"
+    current: "{{ vol.volume_image_metadata | default({}, true) }}"
+    props: >-
+      {{ (default_boot_image_properties if (item.item.boot | default(false) | bool) else {})
+         | combine(item.item.image_properties | default({})) }}
+    props_s: "{{ dict(props.keys() | zip(props.values() | map('string'))) }}"
+  when:
+    - props | length > 0
+    - (current | combine(props_s)) != current
+    - vol.status != 'available'
+  loop: "{{ vol_meta.results }}"
+  loop_control:
+    label: "{{ item.item.pure_volume }}"
 
 # 3. Resolve boot vs data volumes (validate_vm.yml guarantees exactly one boot disk)
 - name: "{{ vm.name }} | Identify boot and data volumes"
@@ -104,6 +141,32 @@
     loop_var: net
     label: "{{ net.network }}"
 
+# 5b. Security groups by id within the current project: an admin token sees every
+#     project's 'default' group, which makes the bare name ambiguous to Nova.
+- name: "{{ vm.name }} | Resolve security groups in the current project"
+  when: vm.security_groups | default([]) | length > 0
+  block:
+    - name: "{{ vm.name }} | Get the current project id"
+      ansible.builtin.command: "openstack token issue -f value -c project_id"
+      register: os_project
+      changed_when: false
+
+    - name: "{{ vm.name }} | List the project's security groups"
+      ansible.builtin.command: "openstack security group list --project {{ os_project.stdout | trim | quote }} -f json"
+      register: os_sg_list
+      changed_when: false
+
+- name: "{{ vm.name }} | Map security group names to ids"
+  ansible.builtin.set_fact:
+    server_security_groups: >-
+      {{ vm.security_groups | default([]) | map('extract', sg_ids) | list
+         if (vm.security_groups | default([]) | difference(sg_ids.keys() | list) | length == 0)
+         else vm.security_groups | default([]) }}
+  vars:
+    sg_ids: >-
+      {{ (os_sg_list.stdout | from_json | items2dict(key_name='Name', value_name='ID'))
+         if (os_sg_list is defined and os_sg_list is not skipped) else {} }}
+
 # 6. Boot the instance from the boot volume
 - name: "{{ vm.name }} | Boot instance from volume"
   openstack.cloud.server:
@@ -113,7 +176,7 @@
     terminate_volume: false
     availability_zone: "{{ vm.availability_zone | default(omit) }}"
     key_name: "{{ vm.key_name if (vm.key_name | default('') | length > 0) else omit }}"
-    security_groups: "{{ vm.security_groups | default(omit) }}"
+    security_groups: "{{ server_security_groups if (server_security_groups | length > 0) else omit }}"
     nics: "{{ nics_list }}"
     meta: "{{ vm.metadata | default(omit) }}"
     auto_ip: false

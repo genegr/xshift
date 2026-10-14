@@ -17,7 +17,7 @@ disk is skipped.
 | `dry_run` | `true` (default) plans only; `-e dry_run=false` executes |
 | `target_vm_name` | VM to migrate |
 | `vcenter_*` / `fa_*` | vCenter and FlashArray connection |
-| `fail_on_snapshots` | `true` (default): stop when the VM has snapshots (all its disks are deltas then) |
+| `fail_on_snapshots` | `true` (default): stop when the VM has snapshots; `false` clones the current state of each chain |
 | `allow_skipped_disks` | `false` (default): stop when any disk is not a flat VMDK; `true` migrates the flat ones |
 | `xcopy_required` | `true` (default): stop when the clone could not be array-offloaded (see below) |
 | `xcopy_min_throughput_mib` | Warn when a clone ran below this rate (MiB/s); `0` (default) disables |
@@ -74,7 +74,10 @@ array did the copy.
 `generated/mapping-<vm>.yaml` holds one `vm_migrations` entry built from vCenter: `flavor_auto`
 with vCPU and RAM, the NIC portgroup names (to be replaced with Neutron networks), one disk per
 cloned VMDK with the boot disk carrying `image_properties` (`hw_firmware_type` from the VM's
-firmware, `hw_disk_bus: scsi`, `hw_scsi_model: virtio-scsi`). Review it before use.
+firmware, plus `hw_machine_type: q35` for UEFI and `os_secure_boot: required` when Secure Boot is
+on; `hw_disk_bus: scsi`, `hw_scsi_model: virtio-scsi`). Review it before use: a guest without
+virtio drivers needs `hw_disk_bus: sata` / `hw_vif_model: vmxnet3` instead (see the top-level
+README). Distributed-switch NICs appear by portgroup key (`dvportgroup-NNN`).
 
 ## Notes
 - Only `FlatVer2` (flat VMDK) disks are processed.

@@ -28,8 +28,10 @@ fa_validate_certs: false
 device_wait_timeout: 60
 
 # --- Safety checks ---
-# A VM with snapshots has delta backings on every disk, so nothing flat is left
-# to clone. true = stop; false = continue with whatever flat VMDKs remain.
+# A VM with snapshots runs on delta disks. vmkfstools clones the current state of
+# the whole chain (verified on a lab VM with a two-snapshot chain), but the
+# snapshots themselves are not migrated. true = stop and let someone decide;
+# false = clone the current state.
 fail_on_snapshots: true
 # Disks whose backing is not a flat VMDK (RDMs, deltas, sparse) are not cloned.
 # false = stop when any disk would be skipped; true = migrate the flat ones only.

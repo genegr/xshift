@@ -6,6 +6,10 @@
 #   FAKE_MANAGEABLE_JSON  JSON printed by 'block storage volume manageable list'
 case "$*" in
   *"manageable list"*)
+    # Like the real CLI: the host is positional, there is no --host option
+    case "$*" in *" --host "*)
+      echo "openstack block storage volume manageable list: error: unrecognized arguments: --host" >&2; exit 2;;
+    esac
     printf '%s\n' "${FAKE_MANAGEABLE_JSON:-[]}"
     exit 0
     ;;

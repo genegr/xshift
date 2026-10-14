@@ -51,7 +51,7 @@
 - name: "{{ vm.name }} | List the volumes Cinder could manage on the backend"
   ansible.builtin.command: >-
     openstack --os-volume-api-version {{ cinder_api_version }}
-    block storage volume manageable list --host {{ cinder_pure_host | quote }} --long -f json
+    block storage volume manageable list {{ cinder_pure_host | quote }} --long -f json
   register: manageable_list
   changed_when: false
   failed_when: false

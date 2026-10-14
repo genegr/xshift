@@ -25,6 +25,9 @@
                        'source_guest_id': vm_config_info.instance.config.guestId | default('')}} }}
   vars:
     firmware: "{{ 'uefi' if (vm_config_info.instance.config.firmware | default('bios')) == 'efi' else 'bios' }}"
+    secure_boot: >-
+      {{ firmware == 'uefi'
+         and (vm_config_info.instance.config.bootOptions.efiSecureBootEnabled | default(false) | bool) }}
     # hw_ethN entries of vmware_guest_info, in NIC order; the network is copied
     # verbatim and has to be mapped to a Neutron network by hand. vmware_guest_info
     # has no portgroup name field: a standard-switch NIC carries the network name in
@@ -53,9 +56,17 @@
                        'source_vmdk': d.value.backing_filename,
                        'size_gb': ((d.value.capacity_in_kb | int) / 1048576) | round(0, 'ceil') | int} -%}
       {%- if is_boot -%}
-      {%- set _ = entry.update({'image_properties': {'hw_firmware_type': firmware,
-                                                     'hw_disk_bus': 'scsi',
-                                                     'hw_scsi_model': 'virtio-scsi'}}) -%}
+      {%- set props = {'hw_firmware_type': firmware,
+                       'hw_disk_bus': 'scsi',
+                       'hw_scsi_model': 'virtio-scsi'} -%}
+      {%- if firmware == 'uefi' -%}
+      {#- Secure Boot needs q35 with SMM; q35 is also the usual UEFI machine type -#}
+      {%- set _ = props.update({'hw_machine_type': 'q35'}) -%}
+      {%- endif -%}
+      {%- if secure_boot | bool -%}
+      {%- set _ = props.update({'os_secure_boot': 'required'}) -%}
+      {%- endif -%}
+      {%- set _ = entry.update({'image_properties': props}) -%}
       {%- endif -%}
       {%- set _ = out.append(entry) -%}
       {%- endfor -%}
@@ -86,8 +97,10 @@
       #   - networks: vSphere portgroup names copied as-is; replace with Neutron networks
       #   - flavor_auto/vcpus/ram_mb: or set 'flavor' to an existing flavor instead
       #   - key_name, security_groups, availability_zone
-      #   - image_properties on the boot disk (firmware read from vCenter; bus defaults
-      #     to virtio-scsi, which needs virtio drivers in the guest)
+      #   - image_properties on the boot disk (firmware and Secure Boot read from vCenter;
+      #     bus defaults to virtio-scsi, which needs virtio drivers in the guest's
+      #     initramfs. Without them use hw_disk_bus: sata (if the VM has an AHCI
+      #     controller) and hw_vif_model: vmxnet3; VMware PVSCSI does not boot with OVMF)
       # source_vmdk and size_gb are informational.
       # Use with:
       #   ansible-playbook migrate_to_openstack.yaml -e mapping_file={{ mapping_output_dir }}/mapping-{{ vm_name_slug }}.yaml

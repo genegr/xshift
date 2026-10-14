@@ -7,7 +7,7 @@
 kolla_base_distro: "ubuntu"
 
 # No-HA single node: services bind the host IP directly (no VIP/keepalived/haproxy/proxysql).
-kolla_internal_vip_address: "172.17.20.101"
+kolla_internal_vip_address: "192.0.2.101"   # = TARGET_IP in setup.sh (placeholder)
 enable_haproxy: "no"
 enable_proxysql: "no"
 

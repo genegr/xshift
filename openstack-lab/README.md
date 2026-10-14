@@ -10,7 +10,7 @@ Addresses below are placeholders (`192.0.2.x` is a documentation range); substit
 ## Topology
 
 ```
-  dev / jump box (has Docker)                          openstack00 (172.17.20.101, Ubuntu 24.04)
+  dev / jump box (has Docker)                          openstack00 (192.0.2.101, Ubuntu 24.04)
   ┌───────────────────────────────────────┐           ┌────────────────────────────────────────┐
   │ kolla-deployer:2026.1 container        │  SSH      │ OpenStack 2026.1 (kolla containers)      │
   │  + Docker volume 'kolla-config'        │──────────▶│  ens34  = mgmt/API (host IP)             │
@@ -23,8 +23,9 @@ Addresses below are placeholders (`192.0.2.x` is a documentation range); substit
 
 - **Deployer is containerized** on the jump box; nothing kolla-related is installed on a host's
   system Python. All config/state lives in the `kolla-config` Docker volume.
-- Containers run with `--network host` (the jump box `docker0` is `172.17.0.0/16`, which would
-  otherwise shadow openstack00's `172.17.20.0/24`).
+- Containers run with `--network host`: Docker's default bridge (`172.17.0.0/16`) can overlap the
+  target's subnet, and did in the original lab, which makes the target unreachable from a bridged
+  container.
 
 ## Files
 
@@ -48,7 +49,7 @@ Addresses below are placeholders (`192.0.2.x` is a documentation range); substit
 ./osc.sh volume type show pure -c extra_specs   # the type stage 2 manages volumes into
 ```
 
-Horizon: `http://172.17.20.101/` (user `admin`; password = `OS_PASSWORD` in the volume's
+Horizon: `http://192.0.2.101/` (user `admin`; password = `OS_PASSWORD` in the volume's
 `admin-openrc.sh`).
 
 ## Design decisions & workarounds (why this differs from a vanilla AIO)

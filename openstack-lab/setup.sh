@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # --- Parameters --------------------------------------------------------------
-TARGET_IP="172.17.20.101"          # openstack00 management IP (network_interface = ens34)
+TARGET_IP="192.0.2.101"            # openstack00 management IP (placeholder) (network_interface = ens34)
 TARGET_USER="ubuntu"
 SSH_KEY="$HOME/.ssh/id_rsa"        # key that authenticates as ubuntu@openstack00
 PURE_SAN_IP="192.0.2.90"           # FlashArray management IP (placeholder)
@@ -37,8 +37,10 @@ ansible_become=true
 ansible_ssh_private_key_file=/config/ssh/id_rsa
 ansible_ssh_common_args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 EOF'
-# 2b. our overrides + cinder default-type override (pure_san_ip from this script)
-sed "s/^pure_san_ip: .*/pure_san_ip: \"$PURE_SAN_IP\"/" "$HERE/globals.overrides.yml" | \
+# 2b. our overrides + cinder default-type override (addresses from this script)
+sed -e "s/^pure_san_ip: .*/pure_san_ip: \"$PURE_SAN_IP\"/" \
+    -e "s/^kolla_internal_vip_address: .*/kolla_internal_vip_address: \"$TARGET_IP\"/" \
+    "$HERE/globals.overrides.yml" | \
   sudo docker run --rm -i -v kolla-config:/config kolla-deployer:2026.1 \
     bash -c 'cat >> /config/etc-kolla/globals.yml'
 sudo docker run --rm -i -v kolla-config:/config kolla-deployer:2026.1 \

@@ -43,11 +43,15 @@ vm_migrations:
     disks:
       - pure_volume: "lin-server01-disk-0"
         boot: true
-        # Image metadata Nova reads when booting from this volume. A UEFI guest
-        # does not boot with the BIOS default; a guest without virtio drivers
-        # needs hw_disk_bus=ide / hw_vif_model=e1000 until they are installed.
+        # Image metadata Nova reads when it creates an instance from this volume.
+        # A UEFI guest does not boot with the BIOS default. A guest without virtio
+        # drivers in its initramfs needs hw_disk_bus: sata (VM has an AHCI
+        # controller) and hw_vif_model: vmxnet3; VMware PVSCSI does not boot with
+        # UEFI firmware, and q35 has no IDE bus.
         image_properties:
           hw_firmware_type: "uefi"  # "bios" or "uefi" (vSphere: BIOS / EFI)
+          hw_machine_type: "q35"    # with uefi; needed for Secure Boot
+          # os_secure_boot: "required"  # source VM has Secure Boot enabled
           hw_disk_bus: "scsi"
           hw_scsi_model: "virtio-scsi"
           # hw_vif_model: "virtio"

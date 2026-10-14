@@ -44,9 +44,9 @@
     msg: >-
       VM '{{ target_vm_name }}' has {{ vm_snapshots | length }} snapshot(s):
       {{ vm_snapshots | map(attribute='name') | join(', ') }}.
-      Its disks are delta files that cannot be cloned flat. Consolidate or delete
-      the snapshots first, or set fail_on_snapshots=false to migrate only the
-      disks that are still flat.
+      The clone would copy the current state of each disk's snapshot chain and
+      leave the snapshots behind. Consolidate or delete them first, or set
+      fail_on_snapshots=false to clone the current state.
   vars:
     vm_snapshots: "{{ vm_snapshot_info.guest_snapshots.snapshots | default([]) }}"
   when:

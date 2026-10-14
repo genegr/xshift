@@ -111,11 +111,16 @@
           instance:
             hw_eth1: {portgroup: "VM Network 2"}
             hw_eth0: {portgroup: "VM Network"}
+            # What vmware_guest_info really returns: no 'portgroup' field; a standard
+            # switch NIC names its network in 'summary', a dvSwitch NIC has a key.
+            hw_eth2: {summary: "VM Network 3", portgroup_key: null}
+            hw_eth3: {summary: "DVSwitch: 50 04 90 1a", portgroup_key: "dvportgroup-101"}
             hw_power_status: "poweredOff"
         vm_config_info:
           instance:
             config:
               firmware: "efi"
+              bootOptions: {efiSecureBootEnabled: true}
               guestId: "ubuntu64Guest"
               hardware: {numCPU: 4, memoryMB: 8192}
       block:
@@ -132,12 +137,15 @@
               - mapping.vm_migrations[0].name == 'Lin Server01'
               - mapping.vm_migrations[0].vcpus == 4
               - mapping.vm_migrations[0].ram_mb == 8192
-              - "mapping.vm_migrations[0].networks == [{'network': 'VM Network'}, {'network': 'VM Network 2'}]"
+              - "mapping.vm_migrations[0].networks == [{'network': 'VM Network'}, {'network': 'VM Network 2'},
+                 {'network': 'VM Network 3'}, {'network': 'dvportgroup-101'}]"
               - mapping.vm_migrations[0].disks | length == 2
               - mapping.vm_migrations[0].disks[0].pure_volume == 'lin-server01-disk-0'
               - mapping.vm_migrations[0].disks[0].boot
               - mapping.vm_migrations[0].disks[0].size_gb == 40
               - mapping.vm_migrations[0].disks[0].image_properties.hw_firmware_type == 'uefi'
+              - mapping.vm_migrations[0].disks[0].image_properties.hw_machine_type == 'q35'
+              - mapping.vm_migrations[0].disks[0].image_properties.os_secure_boot == 'required'
               - mapping.vm_migrations[0].disks[1].pure_volume == 'lin-server01-disk-2'
               - not mapping.vm_migrations[0].disks[1].boot
               - mapping.vm_migrations[0].disks[1].size_gb == 11

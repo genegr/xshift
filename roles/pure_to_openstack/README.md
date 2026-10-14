@@ -25,12 +25,17 @@ A dry run stops here. A real run then, per VM (`import_vm.yml`):
    each Pure volume that is not yet a Cinder volume (idempotent; `--bootable` on the boot disk).
    The Pure driver renames the array volume to `volume-<id>-cinder`; the mapping name stays as the
    Cinder name.
-5. Wait until all volumes are `available`; `error`/`error_managing` fails at once with the
-   unmanage command to undo.
+5. Wait until all volumes are `available` (or `in-use` on a re-run); `error`/`error_managing`
+   fails at once with the unmanage command to undo.
 6. `openstack volume set --image-property` applies `default_boot_image_properties` merged with the
-   disk's `image_properties` (`hw_firmware_type`, `hw_disk_bus`, ...).
-7. Boot the instance from the `boot: true` volume (`openstack.cloud.server` `boot_volume`).
-8. Attach the remaining volumes (`openstack.cloud.server_volume`).
+   disk's `image_properties` (`hw_firmware_type`, `hw_disk_bus`, ...), only where they differ and
+   only while the volume is unattached. Nova reads them once, at instance creation; a difference on
+   an attached volume is reported, and the instance must be deleted (the volume is kept) and the
+   run repeated to apply it. Properties removed from the mapping are not unset on the volume.
+7. Security group names are resolved to ids in the current project (an admin sees every project's
+   `default` group).
+8. Boot the instance from the `boot: true` volume (`openstack.cloud.server` `boot_volume`).
+9. Attach the remaining volumes (`openstack.cloud.server_volume`).
 
 ## Key variables
 

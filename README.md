@@ -148,7 +148,8 @@ the import needs **no data movement** — only metadata:
   imports the pre-existing backend volume into Cinder, producing a first-class Cinder volume.
 - **`openstack volume set --image-property`** gives that volume the metadata Nova reads when it
   boots from a volume: `hw_firmware_type` (`uefi` for an EFI VM, otherwise the instance never finds
-  its loader), `hw_disk_bus`, `hw_scsi_model`, `hw_vif_model`.
+  its loader), `hw_machine_type`/`os_secure_boot` for Secure Boot, `hw_disk_bus`, `hw_scsi_model`,
+  `hw_vif_model`. Nova reads them once, when the instance is created.
 - **Nova boot-from-volume** then launches an instance whose root disk *is* that Cinder volume.
 
 The migration is driven by a per-VM **mapping** ([`mapping.example.yaml`](mapping.example.yaml))
@@ -162,7 +163,7 @@ portgroup names with Neutron networks and pass it to stage 2.
 | Check | Stage | On failure |
 |-------|-------|------------|
 | VM is powered off | 1 (real run) | stop |
-| VM has no snapshots (`fail_on_snapshots`) | 1 | stop |
+| VM has no snapshots (`fail_on_snapshots`) | 1 | stop, or clone the current state |
 | Every disk is a flat VMDK (`allow_skipped_disks`) | 1 | stop, or migrate the flat ones |
 | The VM's ESXi host is exactly one `hypervisors` member | 1 | stop |
 | A FlashArray host object holds the ESXi host's WWNs/IQN, or can be created | 1 | stop |
@@ -297,7 +298,8 @@ packages from `requirements.txt` installed.
 ## Safety & security notes
 
 - **Cold migration only.** The playbook refuses to run against a powered-on VM (outside dry-run) to
-  avoid copying a disk with in-flight writes, and against a VM with snapshots, whose disks are deltas.
+  avoid copying a disk with in-flight writes. A VM with snapshots stops the run by default: the clone
+  would carry the current state of each snapshot chain but not the snapshots themselves.
 - **Nothing is skipped silently.** Disks that are not flat VMDKs stop the run unless
   `allow_skipped_disks` is set, and are listed either way. A clone that cannot be offloaded stops the
   run unless `xcopy_required: false`.
@@ -307,7 +309,9 @@ packages from `requirements.txt` installed.
 - **Idempotency / re-runs.** Stage 1 wraps execution in `block`/`rescue`/`always`, so the temp RDM
   removal and volume disconnect run even on failure, and the failure message names the task and
   error. Re-running stage 1 for the same VM reuses (and overwrites) volumes of the same name that
-  stage 2 has not yet managed. Stage 2's manage step is idempotent (skips already-managed volumes).
+  stage 2 has not yet managed. Stage 2 is idempotent: re-running it for migrated VMs changes nothing
+  (already-managed volumes are skipped, image properties are only written when they differ and the
+  volume is not yet attached).
 - **`validate_certs: false`** is the default for vCenter and the FlashArray REST API — acceptable in
   labs, but enable certificate validation for production (`vcenter_validate_certs: true`,
   `fa_validate_certs: true`). `host_key_checking` is off for the ESXi SSH connection for the same
@@ -315,21 +319,30 @@ packages from `requirements.txt` installed.
 
 ## Limitations & known issues
 
-- **Untested additions.** The XCOPY prerequisite checks, the VAAI device status check, the clone
-  throughput report and the generated mapping were written after the end-to-end lab validation and
-  have not been run against hardware yet. They read documented `esxcli` output and FlashArray REST
-  fields; please report any mismatch.
+- **Partly lab-tested.** The XCOPY prerequisite checks and the generated mapping have been dry-run
+  against a lab vCenter and FlashArray. The VAAI device status check and the clone throughput
+  report run only on a real clone and have not been exercised yet.
 - **One VM per stage 1 run.** Stage 2 takes a multi-VM mapping; stage 1 is invoked once per VM.
 - **ESXi host must be in the inventory** — stage 1 runs `vmkfstools` on the host vCenter reports for
   the VM, so that host has to be listed in the `hypervisors` group (the run stops with a clear
   message otherwise). `target_esxi_host` forces a specific host.
-- **Only "flat" VMDKs** (`FlatVer2` backing) are processed; RDMs, snapshot deltas and other backing
-  types are reported and, by default, stop the run.
+- **Only "flat" VMDKs** (`FlatVer2` backing) are processed; RDMs and other backing types are
+  reported and, by default, stop the run. The disks of a VM with snapshots still report `FlatVer2`
+  and clone the current state of the chain.
 - **Volume names.** VM names are folded to FlashArray-safe names (`Web Server 01` →
   `web-server-01`); two VMs that fold to the same name would share volume names.
-- **Guest-side adjustments** after boot-from-volume are out of scope: a migrated guest may need
-  virtio drivers, `hw_disk_bus: ide` / `hw_vif_model: e1000` until it has them, cloud-init, removal
-  of VMware Tools, and network configuration updated for the new interface names.
+- **UEFI boot entries are not migrated.** vSphere keeps them in the VM's `.nvram` file, so the
+  instance starts with empty firmware variables and boots only if the guest has the fallback loader
+  `\EFI\BOOT\BOOTX64.EFI` on its EFI partition (Windows and most current Linux distributions do).
+  Virtual TPM contents are not migrated either.
+- **Guest drivers.** The generated mapping presents virtio-scsi, which needs virtio drivers in the
+  guest's initramfs; a RHEL-family guest installed on VMware typically has none and stops in the
+  dracut emergency shell. Without changing the guest, use `hw_disk_bus: sata` (when the VM has an
+  AHCI controller) and `hw_vif_model: vmxnet3`. VMware PVSCSI (`hw_scsi_model: vmpvscsi`) is
+  accepted by Nova but OVMF cannot boot from it, and q35 (UEFI) has no IDE bus.
+- **Guest-side adjustments** after boot-from-volume are out of scope: installing virtio drivers,
+  cloud-init (which treats the migrated guest as a new instance), removal of VMware Tools, and
+  network configuration updated for the new interface names.
 - **Offload is checked, not proven.** The prerequisite checks establish that ESXi *may* offload the
   clone; the throughput report is a heuristic. The esxtop VAAI counters are the authoritative proof.
 

@@ -1,22 +1,22 @@
 # These initial groups are the only groups required to be modified. The
 # additional groups are for more control of the environment.
 [control]
-openstack00 ansible_host=172.17.20.101
+openstack00 ansible_host=192.0.2.101
 
 [network]
-openstack00 ansible_host=172.17.20.101
+openstack00 ansible_host=192.0.2.101
 
 [compute]
-openstack00 ansible_host=172.17.20.101
+openstack00 ansible_host=192.0.2.101
 
 [storage]
-openstack00 ansible_host=172.17.20.101
+openstack00 ansible_host=192.0.2.101
 
 [monitoring]
-openstack00 ansible_host=172.17.20.101
+openstack00 ansible_host=192.0.2.101
 
 [deployment]
-openstack00 ansible_host=172.17.20.101
+openstack00 ansible_host=192.0.2.101
 
 # You can explicitly specify which hosts run each project by updating the
 # groups in the sections below. Common services are grouped together.

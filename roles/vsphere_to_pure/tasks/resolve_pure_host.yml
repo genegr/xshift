@@ -2,10 +2,10 @@
 # Resolve the FlashArray host object for the ESXi execution host (needs esxi_exec_host).
 # The object is found by the ESXi host's initiators (FC WWNs first, then iSCSI IQN), not
 # by name. If none exists it is created (reported only, on a dry run).
-# Sets: esxi_exec_pure_host, pure_host_to_create.
+# Sets: esxi_exec_pure_host, pure_host_to_create, esxi_hba_facts (also used by check_xcopy.yml).
 # NVMe NQNs are not considered: the RDM-based clone needs a SCSI path.
 
-- name: Read the ESXi host's storage adapters from vCenter
+- name: Read the ESXi host's storage adapters and datastore mounts from vCenter
   community.vmware.vmware_host_facts:
     hostname: "{{ vcenter_hostname }}"
     username: "{{ vcenter_username }}"
@@ -15,6 +15,7 @@
     schema: vsphere
     properties:
       - config.storageDevice.hostBusAdapter
+      - config.fileSystemVolume.mountInfo
   delegate_to: localhost
   register: esxi_hba_facts
 
@@ -69,6 +70,7 @@
       delegate_to: localhost
       when: fa_login.x_auth_token is defined
       failed_when: false
+      no_log: true
 
 # Hosts stretched in from other arrays (is_local false) carry the same initiators; skip them.
 - name: Keep the array's own host objects
@@ -168,7 +170,7 @@
     - dry_run | bool
 
 - name: Create the FlashArray host object
-  purestorage.flasharray.purefa_host:
+  everpure.flasharray.purefa_host:
     name: "{{ esxi_exec_pure_host }}"
     personality: esxi
     wwns: "{{ esxi_wwns if (esxi_wwns | length > 0) else omit }}"

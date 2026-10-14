@@ -4,11 +4,18 @@
 # ============================================================================
 # Copy to mapping.yaml and edit. One entry per VM to migrate.
 #
+# Stage 1 writes a starting point for each VM it processed to
+# generated/mapping-<vm>.yaml (vCPU, RAM, firmware, NIC portgroups, disks).
+# Review it, replace the portgroup names with Neutron networks, and merge it
+# here or pass it directly:  -e mapping_file=generated/mapping-<vm>.yaml
+#
 # The Cinder backend (cinder_pure_host / cinder_pure_volume_type) is configured
 # in inventory/group_vars/all/main.yml - this file only lists WHAT to migrate.
 #
 # PRECONDITION: stage 1 (migrate_vm.yaml) has cloned each VMDK onto a Pure
-# volume named:  <target_vm_name lowercased>-disk-<index>  and disconnected it.
+# volume named <vm>-disk-<key>, where <vm> is the VM name lowercased with every
+# character other than a-z, 0-9 and '-' folded to '-', and <key> is the vCenter
+# disk key (0, 1, ...). The volume is disconnected from ESXi.
 # ============================================================================
 
 vm_migrations:
@@ -26,16 +33,25 @@ vm_migrations:
     security_groups:
       - "default"
 
-    # vSphere portgroup -> Neutron network, in vNIC order.
+    # vSphere portgroup -> Neutron network, in vNIC order. Add
+    # fixed_ip: "10.0.0.50" to an entry for a static address.
     networks:
       - network: "provider-net"     # Neutron network name or id
-        # fixed_ip: "10.0.0.50"     # optional static IP
 
     # Disk mapping. `pure_volume` = the FlashArray volume from stage 1.
     # EXACTLY ONE disk must have `boot: true`.
     disks:
       - pure_volume: "lin-server01-disk-0"
         boot: true
+        # Image metadata Nova reads when booting from this volume. A UEFI guest
+        # does not boot with the BIOS default; a guest without virtio drivers
+        # needs hw_disk_bus=ide / hw_vif_model=e1000 until they are installed.
+        image_properties:
+          hw_firmware_type: "uefi"  # "bios" or "uefi" (vSphere: BIOS / EFI)
+          hw_disk_bus: "scsi"
+          hw_scsi_model: "virtio-scsi"
+          # hw_vif_model: "virtio"
+          # os_type: "linux"
       - pure_volume: "lin-server01-disk-1"
         boot: false
 

@@ -1,0 +1,38 @@
+#!/bin/sh
+# Fake openstack CLI for tests/logic. Behaviour is driven by the environment:
+#   FAKE_MISSING_FLAVOR   flavor name that does not exist
+#   FAKE_MISSING_NETWORK  network name that does not exist
+#   FAKE_UNMANAGED        space-separated volume names that are not Cinder volumes
+#   FAKE_MANAGEABLE_JSON  JSON printed by 'block storage volume manageable list'
+case "$*" in
+  *"manageable list"*)
+    printf '%s\n' "${FAKE_MANAGEABLE_JSON:-[]}"
+    exit 0
+    ;;
+esac
+case "$1 $2" in
+  "flavor show")
+    if [ "$3" = "${FAKE_MISSING_FLAVOR:-}" ]; then
+      echo "No flavor with a name or ID of '$3' exists." >&2; exit 1
+    fi
+    echo "flavor-id"
+    ;;
+  "network show")
+    if [ "$3" = "${FAKE_MISSING_NETWORK:-}" ]; then
+      echo "No Network found for $3" >&2; exit 1
+    fi
+    echo "network-id"
+    ;;
+  "volume show")
+    for v in ${FAKE_UNMANAGED:-}; do
+      if [ "$3" = "$v" ]; then
+        echo "No volume with a name or ID of '$3' exists." >&2; exit 1
+      fi
+    done
+    echo "available"
+    ;;
+  *)
+    echo "fake openstack: unexpected arguments: $*" >&2
+    exit 1
+    ;;
+esac

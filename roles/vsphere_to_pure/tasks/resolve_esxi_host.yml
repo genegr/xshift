@@ -23,7 +23,9 @@
 # host var esxi_vcenter_name (the name vCenter uses, when it differs from both).
 - name: Collect the names of each inventory hypervisor
   ansible.builtin.set_fact:
-    esxi_candidates: "{{ esxi_candidates + [{'host': item, 'names': names, 'short': names | map('regex_replace', '\\..*$', '') | unique | list}] }}"
+    esxi_candidates: >-
+      {{ esxi_candidates + [{'host': item, 'names': names,
+                             'short': names | map('regex_replace', '\..*$', '') | unique | list}] }}
   vars:
     names: >-
       {{ [item,

@@ -1,0 +1,15 @@
+---
+profile: moderate
+
+exclude_paths:
+  - .github/
+  - openstack-lab/
+  - .yamllint
+
+skip_list:
+  # The roles share short, descriptive fact names (esxi_exec_host, vol_naa ...)
+  # on purpose; prefixing every one with the role name would hurt readability.
+  - var-naming[no-role-prefix]
+  # Task names lead with their loop context ("Disk 0 | Clone ...", "<vm> | Boot
+  # ..."), which is what makes the per-disk / per-VM output readable.
+  - name[template]

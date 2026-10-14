@@ -6,9 +6,20 @@ dry_run: true
 cinder_pure_host: "openstack00@Pure-FlashArray-iscsi#pure_iscsi_backend"
 cinder_pure_volume_type: "pure"
 
+# Block Storage API microversion for the manageable-volume listing (>= 3.8)
+cinder_api_version: "3.8"
+
 # Retry budget while waiting for managed volumes to become available
 volume_available_retries: 20
 volume_available_delay: 3
+# Volume states that end the wait at once: the manage failed on the backend
+volume_error_states: ["error", "error_managing"]
+
+# Image properties applied to every boot volume before the first boot, merged
+# under the disk's own image_properties from the mapping. Nova reads
+# hw_firmware_type, hw_disk_bus, hw_scsi_model, hw_vif_model, os_type ... from
+# the volume's image metadata when it boots from a volume.
+default_boot_image_properties: {}
 
 # Nova boot timeout (seconds)
 server_boot_timeout: 300

@@ -1,9 +1,17 @@
 ---
 # Ansible Galaxy collections required by the migration playbooks.
 # Install with: ansible-galaxy collection install -r requirements.yml
+#
+# Floors are the versions the playbooks were written against; ceilings keep the
+# next major release out until it has been tested.
 collections:
-  - name: openstack.cloud          # OpenStack stage (Nova boot-from-volume, etc.)
-    version: ">=2.2.0"
-  - name: community.vmware         # vSphere stage (vCenter/ESXi)
-  - name: purestorage.flasharray   # Pure FlashArray volume management
-  - name: ansible.posix
+  # Pure FlashArray volume and host management (stage 1).
+  # purestorage.flasharray 1.45 is only a redirect to this namespace.
+  - name: everpure.flasharray
+    version: ">=1.45.1,<2.0.0"
+  # vSphere stage (vCenter/ESXi)
+  - name: community.vmware
+    version: ">=4.8.0,<8.0.0"
+  # OpenStack stage (Nova boot-from-volume, flavors, volume attach)
+  - name: openstack.cloud
+    version: ">=2.2.0,<3.0.0"

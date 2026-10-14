@@ -1,0 +1,20 @@
+---
+extends: default
+
+ignore: |
+  openstack-lab/inventory
+  openstack-lab/globals.overrides.yml
+  generated/
+  tests/logic/out/
+
+rules:
+  line-length:
+    max: 140
+    allow-non-breakable-inline-mappings: true
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  braces:
+    max-spaces-inside: 1

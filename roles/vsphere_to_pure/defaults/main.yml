@@ -20,9 +20,38 @@ pure_host_name: ""
 pure_host_auto_create: true
 pure_host_create_name: "{{ esxi_exec_host }}"
 
-# FlashArray REST API used to list host objects
+# FlashArray REST API used to list host objects and look up datastore volumes
 fa_rest_version: "2.4"
 fa_validate_certs: false
 
 # Seconds to wait for the new FlashArray device to appear on ESXi
 device_wait_timeout: 60
+
+# --- Safety checks ---
+# A VM with snapshots has delta backings on every disk, so nothing flat is left
+# to clone. true = stop; false = continue with whatever flat VMDKs remain.
+fail_on_snapshots: true
+# Disks whose backing is not a flat VMDK (RDMs, deltas, sparse) are not cloned.
+# false = stop when any disk would be skipped; true = migrate the flat ones only.
+allow_skipped_disks: false
+
+# --- XCOPY offload checks ---
+# The clone is only array-offloaded when (a) DataMover.HardwareAcceleratedMove
+# is enabled on the ESXi host, (b) every source datastore is backed by a volume
+# on fa_url and (c) the destination device reports VAAI clone support. ESXi
+# falls back to a host-side copy silently otherwise.
+# true = stop when any of these fails; false = report it and clone anyway.
+xcopy_required: true
+# Clone throughput (MiB/s) below which a warning is printed after each clone.
+# 0 disables the heuristic. An offloaded clone on a FlashArray usually runs far
+# above 1000 MiB/s; a host-side copy is bounded by the HBA path. The esxtop VAAI
+# counters (CLONE_RD / CLONE_WR / CLONE_F) remain the authoritative check.
+xcopy_min_throughput_mib: 0
+
+# --- Stage 2 hand-off ---
+# Directory (relative to the playbook) that receives a stage 2 mapping fragment
+# built from what vCenter reported: generated/mapping-<vm>.yaml. Empty = skip.
+mapping_output_dir: "generated"
+# vCenter disk key treated as the boot disk in the generated mapping
+# (the first disk on the first controller is key 0)
+boot_disk_index: 0

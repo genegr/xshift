@@ -1,0 +1,39 @@
+---
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: pip install "ansible-core>=2.17,<2.19" ansible-lint yamllint
+
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: yamllint
+        run: yamllint --strict .
+
+      - name: ansible-lint
+        run: ansible-lint
+
+      - name: Playbook syntax check
+        run: |
+          cp mapping.example.yaml mapping.yaml
+          for p in migrate_vm.yaml migrate_to_openstack.yaml site.yml; do
+            ansible-playbook --syntax-check "$p"
+          done
+
+      - name: Role logic tests (fake esxcli / openstack)
+        run: ansible-playbook tests/logic/test.yml

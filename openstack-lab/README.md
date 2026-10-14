@@ -5,10 +5,12 @@ development target for the migration playbooks. It provides Keystone/Glance/Nova
 with a Pure FlashArray iSCSI backend**, which is what the OpenStack stage of the migration imports
 volumes into and boots instances from.
 
+Addresses below are placeholders (`192.0.2.x` is a documentation range); substitute your own.
+
 ## Topology
 
 ```
-  dev / jump box (10.225.113.197, has Docker)          openstack00 (172.17.20.101, Ubuntu 24.04)
+  dev / jump box (has Docker)                          openstack00 (172.17.20.101, Ubuntu 24.04)
   ┌───────────────────────────────────────┐           ┌────────────────────────────────────────┐
   │ kolla-deployer:2026.1 container        │  SSH      │ OpenStack 2026.1 (kolla containers)      │
   │  + Docker volume 'kolla-config'        │──────────▶│  ens34  = mgmt/API (host IP)             │
@@ -16,7 +18,7 @@ volumes into and boots instances from.
   │  kolla.sh / osc.sh wrappers            │           │  local registry :4000 (custom images)   │
   └───────────────────────────────────────┘           │  cinder: LVM(loopback) + Pure iSCSI      │
                                                        └───────────────┬────────────────────────┘
-                                                          Pure FlashArray 10.225.112.90 (iSCSI)
+                                                          Pure FlashArray 192.0.2.90 (iSCSI)
 ```
 
 - **Deployer is containerized** on the jump box; nothing kolla-related is installed on a host's
@@ -43,6 +45,7 @@ volumes into and boots instances from.
 ./kolla.sh deploy            # or: reconfigure, prechecks, post-deploy, destroy ...
 ./osc.sh service list
 ./osc.sh volume service list # confirm cinder-volume@Pure-FlashArray-iscsi is up
+./osc.sh volume type show pure -c extra_specs   # the type stage 2 manages volumes into
 ```
 
 Horizon: `http://172.17.20.101/` (user `admin`; password = `OS_PASSWORD` in the volume's
@@ -72,6 +75,6 @@ Live only in the `kolla-config` Docker volume, not in git:
 
 ## ⚠️ Shared array
 
-`10.225.112.90` is a **shared/production FlashArray**. Cinder only manages its own `*-cinder`
-volumes; `pure_eradicate_on_delete` is left at its default (false) so deletes are recoverable from
-the array's destroy bin. Do not eradicate volumes you did not create.
+The lab array may be a **shared** FlashArray. Cinder only manages its own `*-cinder` volumes;
+`pure_eradicate_on_delete` is left at its default (false) so deletes are recoverable from the
+array's destroy bin. Do not eradicate volumes you did not create.

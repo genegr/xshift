@@ -2,6 +2,7 @@
 # single-node AIO on openstack00. (The sample provides the rest, all commented.)
 #
 # NOTE: pure_api_token is NOT here - it lives in passwords.yml (never committed).
+# Addresses are placeholders; set your own management IP and array IP.
 
 kolla_base_distro: "ubuntu"
 
@@ -23,6 +24,6 @@ enable_cinder: "yes"
 enable_cinder_backend_lvm: "yes"
 enable_cinder_backend_pure_iscsi: "yes"
 enable_multipathd: "yes"
-pure_san_ip: "10.225.112.90"
+pure_san_ip: "192.0.2.90"               # FlashArray management IP (placeholder)
 # Custom cinder-volume image with py-pure-client added (served from local registry)
 cinder_volume_image_full: "localhost:4000/cinder-volume-pure:2026.1"

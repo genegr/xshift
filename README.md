@@ -389,6 +389,8 @@ packages from `requirements.txt` installed.
 │
 ├── .github/workflows/lint.yml  # yamllint, ansible-lint, playbook syntax check
 ├── .ansible-lint / .yamllint
+├── CLAUDE.md                 # Project map, commands and rules for Claude Code
+├── .claude/skills/           # Contributor skills (verify, change roles, ESXi clone, stage 2, lab, recovery)
 │
 ├── inventory/
 │   ├── hosts.yml             # hosts/groups only (localhost + ESXi hypervisors)
@@ -408,6 +410,13 @@ packages from `requirements.txt` installed.
 │
 └── openstack-lab/            # Reproducible kolla-ansible OpenStack 2026.1 dev lab
 ```
+
+## Working on this repository with Claude Code
+
+[`CLAUDE.md`](CLAUDE.md) gives Claude Code the project map, the commands and the rules for this repository,
+and [`.claude/skills/`](.claude/skills/) holds skills for the recurring jobs: verifying a change, changing the
+roles, the ESXi disk clone, stage 2, a lab run, and recovering from a failed run. Both are shared, so they
+carry no lab addresses or credentials. Put your own lab facts in `CLAUDE.local.md` (git-ignored).
 
 ## Disclaimer
 

@@ -1,0 +1,30 @@
+---
+# Runs the real roles/vsphere_to_pure/tasks/migrate_disk.yml against the stub modules (see run.sh).
+# The vars below are the ones earlier tasks (resolve_*, check_xcopy, main) hand to migrate_disk.yml:
+# when a variable is renamed there, this play fails and tells you where the contract moved.
+- name: Mock run of migrate_disk.yml
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - roles/vsphere_to_pure/defaults/main.yml
+  vars:
+    vcenter_hostname: vc.example
+    vcenter_username: administrator@vsphere.local
+    vcenter_password: vc-secret
+    fa_url: array.example
+    fa_api_token: fa-token
+    esxi_exec_host: esxi03
+    esxi_exec_api_host: 192.0.2.10
+    esxi_exec_vcenter_name: esxi03.example
+    esxi_exec_pure_host: esxi03-pure
+    pure_host_to_create: false
+    vm_name_slug: lin-server01
+    source_datastores: {ds1: ["naa.624a9370aaaa"]}
+  tasks:
+    - name: Run migrate_disk.yml
+      ansible.builtin.include_tasks: roles/vsphere_to_pure/tasks/migrate_disk.yml
+      loop:
+        - {key: "0", value: {backing_filename: "[ds1] vm/vm.vmdk", capacity_in_kb: 41943040}}
+      loop_control:
+        loop_var: disk_item
+        label: "disk {{ disk_item.key }}"

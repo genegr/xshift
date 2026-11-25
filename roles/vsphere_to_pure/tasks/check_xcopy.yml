@@ -1,18 +1,10 @@
 ---
-# XCOPY offload prerequisites (needs esxi_exec_host, esxi_hba_facts, vm_flat_disks).
-# ESXi only offloads a vmkfstools clone when DataMover.HardwareAcceleratedMove is
+# XCOPY offload prerequisites (needs esxi_exec_host, esxi_hba_facts, esxi_advanced_options, vm_flat_disks).
+# ESXi only offloads the disk clone when DataMover.HardwareAcceleratedMove is
 # on and source and destination sit on the same array; otherwise it copies through
-# the host without saying so. The destination device's own VAAI clone status is
-# checked per disk in migrate_disk.yml, once the device is visible.
+# the host without saying so. The destination device's own hardware acceleration
+# status is checked per disk in migrate_disk.yml, once the device is visible.
 # Sets: xcopy_problems (list of strings, empty when everything is in place).
-
-- name: Read DataMover.HardwareAcceleratedMove on the ESXi host
-  ansible.builtin.shell: >-
-    esxcli system settings advanced list -o /DataMover/HardwareAcceleratedMove
-    | sed -n 's/^ *Int Value: *//p'
-  delegate_to: "{{ esxi_exec_host }}"
-  register: esxi_datamover
-  changed_when: false
 
 - name: Map each source datastore to its backing devices
   ansible.builtin.set_fact:
@@ -96,7 +88,9 @@
       {%- endfor -%}
       {{ out }}
   vars:
-    datamover: "{{ esxi_datamover.stdout | trim }}"
+    # Integer 1/0 from vCenter; 'unknown' when the option is missing, which is reported as a problem
+    datamover: >-
+      {{ (esxi_advanced_options.hosts_info.values() | first)['DataMover.HardwareAcceleratedMove'] | default('unknown') | string }}
 
 - name: Report the XCOPY prerequisites
   ansible.builtin.debug:

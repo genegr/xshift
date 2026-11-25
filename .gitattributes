@@ -1,0 +1,3 @@
+# Scripts and playbooks run on Linux (Docker image, CI). A CRLF checkout on Windows
+# breaks shebangs ("/bin/sh\r") and makes yamllint report new-lines errors.
+* text=auto eol=lf

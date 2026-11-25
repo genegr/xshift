@@ -4,13 +4,17 @@ dry_run: true
 
 # vCenter TLS verification (labs often use self-signed certs)
 vcenter_validate_certs: false
+# TLS verification for the direct ESXi API login used by the clone (ESXi certs are
+# usually self-signed, independent of vCenter's)
+esxi_validate_certs: false
 
 # Pure FlashArray NAA prefix (OUI 624a9370) used to locate the device on ESXi
 pure_naa_prefix: "naa.624a9370"
 
-# ESXi host (member of the 'hypervisors' group) on which vmkfstools runs.
-# Empty = auto-detect from the VM's placement in vCenter (see resolve_esxi_host.yml).
-# Set it only to force a specific host, which must mount the source datastore.
+# ESXi host (member of the 'hypervisors' group) whose vSphere API runs the clone
+# (community.vmware.vmware_vmdk_clone). Empty = auto-detect from the VM's placement
+# in vCenter (see resolve_esxi_host.yml). Set it only to force a specific host,
+# which must mount the source datastore.
 target_esxi_host: ""
 
 # FlashArray host object for the ESXi host. Empty = find it by the ESXi host's
@@ -26,9 +30,11 @@ fa_validate_certs: false
 
 # Seconds to wait for the new FlashArray device to appear on ESXi
 device_wait_timeout: 60
+# Seconds to wait for one disk clone to complete (the module default is 3600)
+clone_timeout: 14400
 
 # --- Safety checks ---
-# A VM with snapshots runs on delta disks. vmkfstools clones the current state of
+# A VM with snapshots runs on delta disks. The clone copies the current state of
 # the whole chain (verified on a lab VM with a two-snapshot chain), but the
 # snapshots themselves are not migrated. true = stop and let someone decide;
 # false = clone the current state.
@@ -40,8 +46,9 @@ allow_skipped_disks: false
 # --- XCOPY offload checks ---
 # The clone is only array-offloaded when (a) DataMover.HardwareAcceleratedMove
 # is enabled on the ESXi host, (b) every source datastore is backed by a volume
-# on fa_url and (c) the destination device reports VAAI clone support. ESXi
-# falls back to a host-side copy silently otherwise.
+# on fa_url and (c) the destination device reports hardware acceleration support
+# (vStorageSupport 'vStorageSupported'). ESXi falls back to a host-side copy
+# silently otherwise.
 # true = stop when any of these fails; false = report it and clone anyway.
 xcopy_required: true
 # Clone throughput (MiB/s) below which a warning is printed after each clone.

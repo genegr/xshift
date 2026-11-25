@@ -33,6 +33,7 @@ NFS/iSCSI copy is reduced to minutes (or seconds on thin/deduplicated data).
 - [Limitations & known issues](#limitations--known-issues)
 - [Roadmap](#roadmap)
 - [Repository layout](#repository-layout)
+- [License](#license)
 - [Disclaimer](#disclaimer)
 
 ---
@@ -48,8 +49,10 @@ The playbook wires this up for you:
 1. It reads the VM's disk layout from vCenter.
 2. For each disk, it provisions a matching raw volume on the FlashArray and presents it to an ESXi
    host as a device.
-3. It runs `vmkfstools -i <source.vmdk> -d rdmp:<device>` on that ESXi host. This clone operation is
-   what triggers XCOPY, landing a raw, bootable copy of the disk onto the FlashArray volume.
+3. It clones `<source.vmdk>` onto that device as a physical RDM, the equivalent of
+   `vmkfstools -i <source.vmdk> -d rdmp:<device>`, with the `community.vmware.vmware_vmdk_clone`
+   module through the ESXi host's vSphere API (no SSH). This clone operation is what triggers
+   XCOPY, landing a raw, bootable copy of the disk onto the FlashArray volume.
 4. It cleans up the temporary RDM mapping and detaches the volume from ESXi.
 
 The result is a **standalone FlashArray volume that contains the VM's disk**, ready to be imported
@@ -66,8 +69,8 @@ can *manage* the existing backend volume in place.
                         | (VM & disk inventory, snapshots,          |
                         |  power state, HBA rescan)                 |
                         |                                           |
-   +--------------------+----------+     SSH (vmkfstools,  +--------+--------------+
-   |  Ansible control node         |      esxcli)          |      ESXi host        |
+   +--------------------+----------+     vSphere API       +--------+--------------+
+   |  Ansible control node         |      (vmdk clone)     |      ESXi host        |
    |  (this project, in Docker)    |---------------------->|  (mounts the VMFS     |
    |                               |                       |   datastore + volume) |
    |  community.vmware             |                       +-----------+-----------+
@@ -96,7 +99,7 @@ can *manage* the existing backend volume in place.
 |-----------|------|
 | Ansible control node | Orchestrates everything; runs inside Docker (see [Usage](#usage)). |
 | vCenter | Source of truth for VM inventory, disk layout, snapshots, firmware, power state; performs HBA rescans. |
-| ESXi host | Executes `vmkfstools` and read-only `esxcli` checks over SSH; must mount both the source datastore and the new volume. |
+| ESXi host | Runs the disk clone for `vmware_vmdk_clone`, which logs in to the host's own vSphere API (root, port 443); must mount both the source datastore and the new volume. No SSH. |
 | Pure FlashArray | Provides both the source datastore and the destination volume; performs the XCOPY. |
 | OpenStack (Cinder/Nova) | Imports the landed volume and boots the migrated instance. |
 
@@ -115,10 +118,10 @@ can *manage* the existing backend volume in place.
  [3] Provision matching volume on FlashArray
         │
         ▼
- [4] Present volume to ESXi + rescan + VAAI clone status
+ [4] Present volume to ESXi + rescan + hardware acceleration status
         │
         ▼
- [5] vmkfstools clone → XCOPY block copy (+ throughput report)
+ [5] vmware_vmdk_clone (RDM) → XCOPY block copy (+ throughput report)
         │
         ▼
  [6] Detach volume + cleanup RDM
@@ -166,10 +169,11 @@ portgroup names with Neutron networks and pass it to stage 2.
 | VM has no snapshots (`fail_on_snapshots`) | 1 | stop, or clone the current state |
 | Every disk is a flat VMDK (`allow_skipped_disks`) | 1 | stop, or migrate the flat ones |
 | The VM's ESXi host is exactly one `hypervisors` member | 1 | stop |
+| The ESXi host's API login works and it sees every source disk as a regular VMDK (`vmware_vmdk_info`) | 1 | stop |
 | A FlashArray host object holds the ESXi host's WWNs/IQN, or can be created | 1 | stop |
 | `DataMover.HardwareAcceleratedMove` is `1` on the ESXi host (`xcopy_required`) | 1 | stop, or host-side copy |
 | Every source datastore's extent is a volume on `fa_url` (`xcopy_required`) | 1 | stop, or host-side copy |
-| The new device reports VAAI `Clone Status: supported` (`xcopy_required`) | 1 (real run) | stop, or host-side copy |
+| The new device reports hardware acceleration support, `vStorageSupport: vStorageSupported` (`xcopy_required`) | 1 (real run) | stop, or host-side copy |
 | Mapping shape: one boot disk, networks, flavor or `flavor_auto` | 2 | stop |
 | Flavor and networks exist | 2 | stop |
 | Each volume is a Cinder volume or `safe_to_manage` on the backend | 2 | stop |
@@ -186,7 +190,9 @@ turns a low rate into a warning.
   makes XCOPY offload possible). Stage 1 verifies it; with `xcopy_required: false` a cross-array
   copy still works but falls back to a normal, slower copy through the ESXi host.
 - VAAI hardware acceleration enabled on the ESXi hosts (`DataMover.HardwareAcceleratedMove`).
-- SSH enabled on the target ESXi host (used to run `vmkfstools` and read-only `esxcli` checks).
+- The ESXi host's **root login**, reachable over HTTPS (port 443) from the control node: the disk clone
+  logs in to the host's own vSphere API (vCenter ignores the RDM destination of a disk copy). No SSH is
+  needed.
 - FC or iSCSI connectivity between the ESXi host and the FlashArray. The array **host object** is found
   by the ESXi host's WWNs/IQN and created if absent (set `pure_host_name` to force a specific one).
 - A FlashArray **API token** with volume/host management rights.
@@ -198,9 +204,12 @@ turns a low rate into a warning.
 - Admin credentials (manage-existing and the manageable listing are admin operations).
 
 **On the control node** (all provided by the Docker image — see [Usage](#usage))
-- Ansible (`ansible-core` 2.17 or 2.18).
+- Ansible (`ansible-core` 2.21 or later, which `vmware_vmdk_clone` requires) and `git`.
 - Collections: `community.vmware`, `everpure.flasharray` (formerly `purestorage.flasharray`) and
-  `openstack.cloud`, pinned in [`requirements.yml`](requirements.yml).
+  `openstack.cloud`, pinned in [`requirements.yml`](requirements.yml). `community.vmware` comes from
+  the `genegr` fork, pinned by commit, because `vmware_vmdk_clone` / `vmware_vmdk_info`
+  ([PR #2623](https://github.com/ansible-collections/community.vmware/pull/2623)) are not in a
+  Galaxy release yet.
 - Python libraries: `pyvmomi`, `py-pure-client`, `openstacksdk` and a `python-openstackclient`
   recent enough for `volume create --remote-source`, pinned in [`requirements.txt`](requirements.txt).
 
@@ -220,7 +229,8 @@ variables:
 | `target_vm_name` | The VM to migrate (stage 1 handles one VM per run). |
 | `fa_url` / `fa_api_token` | FlashArray management endpoint and API token. |
 | `pure_host_name` | Optional: force a FlashArray host object. Empty (default) matches it by the ESXi host's WWNs/IQN and creates it if absent. |
-| `hypervisors` hosts | ESXi host(s) reachable over SSH; the one hosting the VM is selected automatically. |
+| `hypervisors` hosts | ESXi host(s) with their root API login (`ansible_host`, `ansible_user`, `ansible_password`); the one hosting the VM is selected automatically. |
+| `esxi_validate_certs` | Verify the ESXi host's TLS certificate for that login (default `false`, hosts are usually self-signed). |
 | `target_esxi_host` | Optional: force a specific `hypervisors` member instead of auto-detection. |
 | `fail_on_snapshots` / `allow_skipped_disks` | Stage 1 safety switches (defaults: stop). |
 | `xcopy_required` / `xcopy_min_throughput_mib` | Stage 1 offload checks (default: stop when offload is impossible; no throughput warning). |
@@ -314,18 +324,23 @@ packages from `requirements.txt` installed.
   volume is not yet attached).
 - **`validate_certs: false`** is the default for vCenter and the FlashArray REST API — acceptable in
   labs, but enable certificate validation for production (`vcenter_validate_certs: true`,
-  `fa_validate_certs: true`). `host_key_checking` is off for the ESXi SSH connection for the same
-  reason.
+  `fa_validate_certs: true`). `esxi_validate_certs: false` (the ESXi root API login) is the same
+  trade-off.
 
 ## Limitations & known issues
 
 - **Partly lab-tested.** The XCOPY prerequisite checks and the generated mapping have been dry-run
-  against a lab vCenter and FlashArray. The VAAI device status check and the clone throughput
-  report run only on a real clone and have not been exercised yet.
+  against a lab vCenter and FlashArray. The hardware acceleration status check and the clone
+  throughput report run only on a real clone and have not been exercised yet. The clone itself moved
+  from SSH `vmkfstools` to `vmware_vmdk_clone`; the module has been run against vCenter/ESXi 8.0.3
+  with an FC LUN, but this repository's stage 1 has not yet been run end-to-end with it.
+- **The device check is the overall status.** The new device is checked with the API's
+  `vStorageSupport` (hardware acceleration of the device as a whole), which is coarser than the
+  per-primitive `Clone Status` that `esxcli storage core device vaai status get` printed before.
 - **One VM per stage 1 run.** Stage 2 takes a multi-VM mapping; stage 1 is invoked once per VM.
-- **ESXi host must be in the inventory** — stage 1 runs `vmkfstools` on the host vCenter reports for
-  the VM, so that host has to be listed in the `hypervisors` group (the run stops with a clear
-  message otherwise). `target_esxi_host` forces a specific host.
+- **ESXi host must be in the inventory** — stage 1 clones through the API of the host vCenter reports
+  for the VM, so that host has to be listed in the `hypervisors` group with its root login (the run
+  stops with a clear message otherwise). `target_esxi_host` forces a specific host.
 - **Only "flat" VMDKs** (`FlatVer2` backing) are processed; RDMs and other backing types are
   reported and, by default, stop the run. The disks of a VM with snapshots still report `FlatVer2`
   and clone the current state of the chain.
@@ -356,17 +371,18 @@ packages from `requirements.txt` installed.
 - [ ] Exercise the new checks against hardware; read the esxtop VAAI counters around the clone.
 - [ ] Multi-VM stage 1 (loop over a VM list, one mapping file out).
 - [ ] Optional post-boot guest remediation (virtio/cloud-init) helpers.
-- [ ] A license.
+- [x] A license (Apache 2.0).
 
 ## Repository layout
 
 ```
 .
 ├── README.md                 # This file
+├── LICENSE                   # Apache License 2.0
 ├── ansible.cfg               # inventory path, roles_path, sane defaults
 ├── Dockerfile                # Migration-runner image (ansible + collections/SDKs)
 ├── requirements.txt          # Python packages for the image (pinned)
-├── requirements.yml          # Ansible collections (everpure.flasharray, vmware, openstack.cloud)
+├── requirements.yml          # Ansible collections (everpure.flasharray, community.vmware, openstack.cloud)
 ├── site.yml                  # Full pipeline (stage 1 + stage 2)
 ├── migrate_vm.yaml           # Stage 1 entry playbook  -> role vsphere_to_pure
 ├── migrate_to_openstack.yaml # Stage 2 entry playbook  -> role pure_to_openstack
@@ -375,6 +391,8 @@ packages from `requirements.txt` installed.
 │
 ├── .github/workflows/lint.yml  # yamllint, ansible-lint, playbook syntax check
 ├── .ansible-lint / .yamllint
+├── CLAUDE.md                 # Project map, commands and rules for Claude Code
+├── .claude/skills/           # Contributor skills (verify, change roles, ESXi clone, stage 2, lab, recovery)
 │
 ├── inventory/
 │   ├── hosts.yml             # hosts/groups only (localhost + ESXi hypervisors)
@@ -385,7 +403,7 @@ packages from `requirements.txt` installed.
 ├── roles/
 │   ├── vsphere_to_pure/      # Stage 1: VMDK → Pure volume via XCOPY (block/always cleanup)
 │   │   ├── defaults/main.yml
-│   │   ├── tasks/{main,resolve_esxi_host,resolve_pure_host,check_xcopy,migrate_disk,write_mapping}.yml
+│   │   ├── tasks/{main,resolve_esxi_host,resolve_pure_host,check_xcopy,migrate_disk,write_mapping,render_mapping}.yml
 │   │   └── README.md
 │   └── pure_to_openstack/    # Stage 2: cinder manage-existing → Nova boot-from-volume
 │       ├── defaults/main.yml
@@ -394,6 +412,19 @@ packages from `requirements.txt` installed.
 │
 └── openstack-lab/            # Reproducible kolla-ansible OpenStack 2026.1 dev lab
 ```
+
+## Working on this repository with Claude Code
+
+[`CLAUDE.md`](CLAUDE.md) gives Claude Code the project map, the commands and the rules for this repository,
+and [`.claude/skills/`](.claude/skills/) holds skills for the recurring jobs: verifying a change, changing the
+roles, the ESXi disk clone, stage 2, a lab run, and recovering from a failed run. Both are shared, so they
+carry no lab addresses or credentials. Put your own lab facts in `CLAUDE.local.md` (git-ignored).
+
+## License
+
+Licensed under the Apache License, Version 2.0; see [`LICENSE`](LICENSE). The Ansible collections the
+playbooks call (`community.vmware`, `openstack.cloud`, `everpure.flasharray`) are installed from their own
+sources under their own licenses; this repository neither includes nor modifies them.
 
 ## Disclaimer
 

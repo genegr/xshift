@@ -1,7 +1,10 @@
 ---
-# Resolve the ESXi host on which vmkfstools runs (needs vm_general_info).
+# Resolve the ESXi host whose vSphere API runs the clone (needs vm_general_info).
 # Default: the host vCenter reports for the VM. Override: target_esxi_host.
-# Sets: esxi_exec_host (inventory host), esxi_exec_vcenter_name, esxi_pure_host_override.
+# Sets: esxi_exec_host (inventory host), esxi_exec_api_host (address for the direct API login),
+#       esxi_exec_vcenter_name, esxi_pure_host_override.
+# The ESXi login (ansible_user / ansible_password of the inventory host) is read from
+# hostvars where it is used, never copied into a fact: set_fact would print the password.
 
 - name: Determine the ESXi host to look up
   ansible.builtin.set_fact:
@@ -61,6 +64,8 @@
 - name: Set the ESXi execution host
   ansible.builtin.set_fact:
     esxi_exec_host: "{{ chosen.host }}"
+    # Address the clone logs in to: the inventory host's ansible_host, else its inventory name
+    esxi_exec_api_host: "{{ hostvars[chosen.host].ansible_host | default(chosen.host) }}"
     esxi_on_placement: "{{ on_placement }}"
     # Name vCenter knows the host by (used for HBA rescans)
     esxi_exec_vcenter_name: >-
@@ -78,7 +83,7 @@
 - name: Report the ESXi execution host
   ansible.builtin.debug:
     msg: >-
-      vmkfstools will run on '{{ esxi_exec_host }}'
+      The clone will run through the vSphere API of ESXi host '{{ esxi_exec_host }}' ({{ esxi_exec_api_host }})
       ({{ 'auto-detected from VM placement' if (esxi_auto_detected | bool) else 'target_esxi_host override' }};
       vCenter name '{{ esxi_exec_vcenter_name }}').
 

@@ -9,9 +9,17 @@ collections:
   # purestorage.flasharray 1.45 is only a redirect to this namespace.
   - name: everpure.flasharray
     version: ">=1.45.1,<2.0.0"
-  # vSphere stage (vCenter/ESXi)
-  - name: community.vmware
-    version: ">=4.8.0,<8.0.0"
+  # vSphere stage (vCenter/ESXi). Stage 1 clones disks with community.vmware.vmware_vmdk_clone and
+  # reads them with vmware_vmdk_info (community.vmware PR #2623): both talk to the ESXi host over the
+  # vSphere API, so no SSH is needed. They are on the genegr fork branch feature/vmdk-info-clone,
+  # pinned by commit. Switch back to the Galaxy release (>=7.1.0) once the PR is released.
+  # Needs ansible-core >= 2.21 and git (ansible-galaxy clones the repository).
+  - name: https://github.com/genegr/community.vmware.git
+    type: git
+    version: e1f31c3289c93da4b8959105c278672d1eb9503b
+  # community.vmware 7.x imports its connection code from vmware.vmware
+  - name: vmware.vmware
+    version: 2.12.0
   # OpenStack stage (Nova boot-from-volume, flavors, volume attach)
   - name: openstack.cloud
     version: ">=2.2.0,<3.0.0"

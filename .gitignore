@@ -3,10 +3,14 @@
 __pycache__/
 *.pyc
 
-# Local-only — keep in the working folder, never publish
-CLAUDE.md
-.claude/
+# Claude Code: CLAUDE.md and .claude/skills/ are shared with contributors.
+# Personal lab facts and local settings stay in the working folder.
+CLAUDE.local.md
+.claude/settings.local.json
 .mcp.json
+
+# ansible-lint installs requirements.yml here
+.ansible/
 
 # Secrets — never commit
 *.vault

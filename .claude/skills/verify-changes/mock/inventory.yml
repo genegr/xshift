@@ -1,0 +1,14 @@
+---
+all:
+  vars:
+    vault_esxi_password: "s3cret-test"
+  children:
+    controllers:
+      hosts:
+        localhost:
+          ansible_connection: local
+    hypervisors:
+      hosts:
+        esxi03:
+          ansible_user: root
+          ansible_password: "{{ vault_esxi_password }}"

@@ -1,6 +1,7 @@
 ---
 # Logic tests that need neither vCenter, a FlashArray nor OpenStack. The role
-# task files run as they are; esxcli and openstack are the fakes in tests/logic/bin.
+# task files run as they are; openstack is the fake in tests/logic/bin, and what the
+# vCenter modules would return (esxi_hba_facts, esxi_advanced_options) is passed in as vars.
 #   ansible-playbook tests/logic/test.yml
 - name: Role logic tests
   hosts: localhost
@@ -13,7 +14,10 @@
     cinder_pure_host: "host@pure#pure"
     cinder_api_version: "3.8"
     dry_run: true
-    fake_datamover: "1"
+    # Advanced settings as vmware_host_config_info returns them: hosts_info keyed by host name
+    esxi_advanced_options:
+      hosts_info:
+        esxi.example: {"DataMover.HardwareAcceleratedMove": 1}
     fake_missing_network: ""
     fake_unmanaged: ""
     fake_manageable: []
@@ -25,7 +29,6 @@
         value: {backing_filename: "[ds1] vm/vm_1.vmdk", backing_type: "FlatVer2", capacity_in_kb: 10485761}
   environment:
     PATH: "{{ playbook_dir }}/bin:{{ lookup('env', 'PATH') }}"
-    FAKE_DATAMOVER: "{{ fake_datamover }}"
     FAKE_MISSING_NETWORK: "{{ fake_missing_network }}"
     FAKE_UNMANAGED: "{{ fake_unmanaged }}"
     FAKE_MANAGEABLE_JSON: "{{ fake_manageable | to_json }}"
@@ -68,7 +71,9 @@
     - name: XCOPY | datastore not mounted and DataMover off are both reported, and stop the run
       vars:
         xcopy_required: true
-        fake_datamover: "0"
+        esxi_advanced_options:
+          hosts_info:
+            esxi.example: {"DataMover.HardwareAcceleratedMove": 0}
         esxi_hba_facts:
           ansible_facts:
             config:
@@ -90,15 +95,6 @@
               - "'datastore ds1 is not mounted on localhost' in xcopy_problems"
               - ansible_failed_task.name == 'Stop when the XCOPY prerequisites are not met'
             quiet: true
-
-    # ---------------- stage 1: clone duration parsing ----------------
-    - name: Clone duration from the command module's delta
-      ansible.builtin.assert:
-        that:
-          - ((parts[0] | int) * 3600 + (parts[1] | int) * 60 + (parts[2] | float)) | round(3) == 3725.5
-        quiet: true
-      vars:
-        parts: "{{ '1:02:05.500000'.split(':') }}"
 
     # ---------------- stage 1: mapping fragment ----------------
     - name: Mapping | render from fake vCenter facts

@@ -2,7 +2,8 @@
 # Resolve the FlashArray host object for the ESXi execution host (needs esxi_exec_host).
 # The object is found by the ESXi host's initiators (FC WWNs first, then iSCSI IQN), not
 # by name. If none exists it is created (reported only, on a dry run).
-# Sets: esxi_exec_pure_host, pure_host_to_create, esxi_hba_facts (also used by check_xcopy.yml).
+# Sets: esxi_exec_pure_host, pure_host_to_create, and the two vCenter reads that check_xcopy.yml
+#       evaluates: esxi_hba_facts (adapters, datastore mounts) and esxi_advanced_options.
 # NVMe NQNs are not considered: the RDM-based clone needs a SCSI path.
 
 - name: Read the ESXi host's storage adapters and datastore mounts from vCenter
@@ -18,6 +19,18 @@
       - config.fileSystemVolume.mountInfo
   delegate_to: localhost
   register: esxi_hba_facts
+
+# Read through vCenter (QueryOptions), so the host setting is checked without an SSH login.
+# hosts_info is keyed by the host name vCenter uses; check_xcopy.yml takes its only value.
+- name: Read the ESXi host's advanced settings from vCenter
+  community.vmware.vmware_host_config_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    esxi_hostname: "{{ esxi_exec_vcenter_name }}"
+  delegate_to: localhost
+  register: esxi_advanced_options
 
 - name: Reset initiator lists
   ansible.builtin.set_fact:

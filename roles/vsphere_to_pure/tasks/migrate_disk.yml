@@ -1,5 +1,9 @@
 ---
 # Per-disk migration (loop_var: disk_item; disk_item.key is the vCenter disk key)
+#
+# The clone runs through the vSphere API of the ESXi host (community.vmware.vmware_vmdk_clone, PR #2623),
+# not over SSH: the module needs the host's root login, which is read from the inventory host
+# (ansible_user / ansible_password) where it is used, never copied into a fact.
 
 # ---------------------------------------------------------------------------
 # 1. Calculation (always runs)
@@ -8,14 +12,16 @@
   ansible.builtin.set_fact:
     disk_index: "{{ disk_item.key }}"
     src_ds_name: "{{ disk_item.value.backing_filename.split(']')[0] | replace('[', '') }}"
-    src_file_path: "{{ disk_item.value.backing_filename.split('] ')[1] }}"
     vol_size_gb: "{{ ((disk_item.value.capacity_in_kb | int) / 1048576) | round(0, 'ceil') | int }}G"
     dest_vol_name: "{{ vm_name_slug }}-disk-{{ disk_item.key }}"
 
 - name: "Disk {{ disk_index }} | Build paths"
   ansible.builtin.set_fact:
-    full_vmdk_path: "/vmfs/volumes/{{ src_ds_name }}/{{ src_file_path }}"
-    temp_rdm_path: "/vmfs/volumes/{{ src_ds_name }}/{{ vm_name_slug }}_temp_{{ disk_index }}.vmdk"
+    # vCenter's backing_filename is already a datastore path: "[datastore] folder/disk.vmdk"
+    src_vmdk: "{{ disk_item.value.backing_filename }}"
+    # The temporary RDM sits in the datastore root: "<name>.vmdk" (descriptor) and "<name>-rdmp.vmdk" (mapping file)
+    temp_rdm_name: "{{ vm_name_slug }}_temp_{{ disk_item.key }}"
+    temp_rdm: "[{{ src_ds_name }}] {{ vm_name_slug }}_temp_{{ disk_item.key }}.vmdk"
 
 # ---------------------------------------------------------------------------
 # 2. Dry-run reporting
@@ -24,10 +30,10 @@
   ansible.builtin.debug:
     msg:
       - "ACTION: migrate disk {{ disk_index }}"
-      - "SOURCE: {{ full_vmdk_path }} (datastore on {{ source_datastores[src_ds_name] | default(['unknown device']) | join(', ') }})"
+      - "SOURCE: {{ src_vmdk }} (datastore on {{ source_datastores[src_ds_name] | default(['unknown device']) | join(', ') }})"
       - "TARGET: FlashArray volume '{{ dest_vol_name }}' ({{ vol_size_gb }})"
       - "HOST:   Pure host object '{{ esxi_exec_pure_host }}'{{ ' (to be created)' if (pure_host_to_create | bool) else '' }}"
-      - "EXEC:   vmkfstools on ESXi '{{ esxi_exec_host }}'"
+      - "EXEC:   vmware_vmdk_clone through the vSphere API of ESXi '{{ esxi_exec_host }}'"
   when: dry_run | bool
 
 # ---------------------------------------------------------------------------
@@ -82,57 +88,74 @@
         rescan_vmfs: true
       delegate_to: localhost
 
+    # vCenter lists the LUN once the rescan has seen it. The result is keyed by the host name
+    # vCenter uses, so the host's only entry is taken instead of indexing by name.
     - name: "Disk {{ disk_index }} | Wait for FlashArray device on ESXi"
-      ansible.builtin.wait_for:
-        path: "/vmfs/devices/disks/{{ vol_naa }}"
-        timeout: "{{ device_wait_timeout }}"
-        state: present
-      delegate_to: "{{ esxi_exec_host }}"
+      community.vmware.vmware_host_scsidisk_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs }}"
+        esxi_hostname: "{{ esxi_exec_vcenter_name }}"
+      delegate_to: localhost
+      register: esxi_luns
+      until: vol_naa in (esxi_luns.hosts_scsidisk_info.values() | first | map(attribute='canonical_name') | list)
+      retries: "{{ ((device_wait_timeout | int) / 5) | round(0, 'ceil') | int }}"
+      delay: 5
 
-    # "supported" here means ESXi may offload the clone; "unsupported" means it will
-    # certainly copy through the host.
-    - name: "Disk {{ disk_index }} | Read the VAAI clone status of the new device"
-      ansible.builtin.shell: >-
-        esxcli storage core device vaai status get -d {{ vol_naa }}
-        | sed -n 's/^ *Clone Status: *//p'
-      delegate_to: "{{ esxi_exec_host }}"
-      register: vaai_status
-      changed_when: false
+    # vStorageSupport is the API's hardware acceleration status of the device:
+    # 'vStorageSupported' means ESXi may offload the clone; 'vStorageUnsupported' means it will
+    # certainly copy through the host. This is the overall status, not esxcli's per-primitive Clone Status.
+    - name: "Disk {{ disk_index }} | Read the hardware acceleration status of the new device"
+      ansible.builtin.set_fact:
+        vaai_status: >-
+          {{ (esxi_luns.hosts_scsidisk_info.values() | first
+              | selectattr('canonical_name', 'equalto', vol_naa)
+              | map(attribute='vStorageSupport') | first) | default('unknown', true) }}
 
-    - name: "Disk {{ disk_index }} | Report the VAAI clone status"
+    - name: "Disk {{ disk_index }} | Report the hardware acceleration status"
       ansible.builtin.debug:
-        msg: "VAAI clone status of {{ vol_naa }} on {{ esxi_exec_host }}: {{ vaai_status.stdout | trim | default('unknown', true) }}"
+        msg: "Hardware acceleration (vStorageSupport) of {{ vol_naa }} on {{ esxi_exec_host }}: {{ vaai_status }}"
 
     - name: "Disk {{ disk_index }} | Stop when the device does not support XCOPY"
       ansible.builtin.fail:
         msg: >-
-          Device {{ vol_naa }} reports VAAI clone status
-          '{{ vaai_status.stdout | trim | default('unknown', true) }}' on {{ esxi_exec_host }};
+          Device {{ vol_naa }} reports hardware acceleration status '{{ vaai_status }}'
+          (expected 'vStorageSupported') on {{ esxi_exec_host }};
           the clone would copy through the host. Set xcopy_required=false to accept that.
       when:
         - xcopy_required | bool
-        - (vaai_status.stdout | trim) != 'supported'
+        - vaai_status != 'vStorageSupported'
 
+    - name: "Disk {{ disk_index }} | Note the clone start time"
+      ansible.builtin.set_fact:
+        clone_started: "{{ now(utc=true).timestamp() }}"
+
+    # force: true deletes a leftover temporary RDM of an earlier failed run first (the module never
+    # replaces a disk that a VM uses). The LUN is overwritten with the disk data.
     - name: "Disk {{ disk_index }} | Clone VMDK to FlashArray volume (XCOPY via RDM)"
-      ansible.builtin.command: >-
-        vmkfstools -i "{{ full_vmdk_path }}"
-        -d rdmp:/vmfs/devices/disks/{{ vol_naa }}
-        "{{ temp_rdm_path }}"
-      delegate_to: "{{ esxi_exec_host }}"
-      register: clone_out
-      changed_when: clone_out.rc == 0
+      community.vmware.vmware_vmdk_clone:
+        hostname: "{{ esxi_exec_api_host }}"
+        username: "{{ hostvars[esxi_exec_host].ansible_user | default('root') }}"
+        password: "{{ hostvars[esxi_exec_host].ansible_password }}"
+        validate_certs: "{{ esxi_validate_certs }}"
+        source: "{{ src_vmdk }}"
+        destination: "{{ temp_rdm }}"
+        disk_format: rdmp
+        device: "{{ vol_naa }}"
+        force: true
+        timeout: "{{ clone_timeout }}"
+      delegate_to: localhost
 
-    # The command module reports its wall time as H:MM:SS.ffffff in 'delta'.
+    # The module reports no duration, so the clone is timed around the task.
     - name: "Disk {{ disk_index }} | Compute clone duration"
       ansible.builtin.set_fact:
-        clone_seconds: "{{ (parts[0] | int) * 3600 + (parts[1] | int) * 60 + (parts[2] | float) }}"
-      vars:
-        parts: "{{ (clone_out.delta | default('0:00:00')).split(':') }}"
+        clone_seconds: "{{ (now(utc=true).timestamp() | float) - (clone_started | float) }}"
 
     - name: "Disk {{ disk_index }} | Report clone throughput"
       ansible.builtin.debug:
         msg: >-
-          Cloned {{ vol_size_gb }} from {{ full_vmdk_path }} in {{ clone_seconds | float | round(1) }} s,
+          Cloned {{ vol_size_gb }} from {{ src_vmdk }} in {{ clone_seconds | float | round(1) }} s,
           about {{ clone_mib_s }} MiB/s.{{ ' WARNING: below xcopy_min_throughput_mib=' ~ xcopy_min_throughput_mib
           ~ '; the copy probably went through the host. Check the esxtop VAAI counters.' if (slow | bool) else '' }}
       vars:
@@ -149,23 +172,36 @@
           The temporary RDM and the host connection are cleaned up in 'always'.
 
   always:
-    # An RDM is two files: the descriptor and its '-rdmp.vmdk' pointer. vmkfstools -U
-    # removes both; the file task below covers a half-created or already-detached RDM.
-    - name: "Disk {{ disk_index }} | Remove temporary RDM mapping"
-      ansible.builtin.command: vmkfstools -U "{{ temp_rdm_path }}"
-      delegate_to: "{{ esxi_exec_host }}"
-      register: rdm_remove
-      changed_when: rdm_remove.rc == 0
-      failed_when: false
-
-    - name: "Disk {{ disk_index }} | Remove leftover temporary RDM files"
-      ansible.builtin.file:
-        path: "{{ item }}"
+    # An RDM is two files: the descriptor and its '-rdmp.vmdk' mapping file. Deleting them leaves
+    # the LUN data alone. vCenter's /folder service refuses .vmdk deletes, so this logs in to the
+    # ESXi host directly (datacenter ha-datacenter). A file that does not exist (the clone never
+    # started, or it was half-created) is not an error. A failure must not stop the FlashArray
+    # disconnect and rescan below, so it is ignored here and reported by the next task.
+    - name: "Disk {{ disk_index }} | Remove the temporary RDM files"
+      community.vmware.vsphere_file:
+        hostname: "{{ esxi_exec_api_host }}"
+        username: "{{ hostvars[esxi_exec_host].ansible_user | default('root') }}"
+        password: "{{ hostvars[esxi_exec_host].ansible_password }}"
+        validate_certs: "{{ esxi_validate_certs }}"
+        datacenter: ha-datacenter
+        datastore: "{{ src_ds_name }}"
+        path: "{{ temp_rdm_name }}{{ item }}"
         state: absent
-      delegate_to: "{{ esxi_exec_host }}"
       loop:
-        - "{{ temp_rdm_path }}"
-        - "{{ temp_rdm_path | regex_replace('\\.vmdk$', '-rdmp.vmdk') }}"
+        - ".vmdk"
+        - "-rdmp.vmdk"
+      delegate_to: localhost
+      register: rdm_cleanup
+      ignore_errors: true
+
+    - name: "Disk {{ disk_index }} | Warn about temporary RDM files that were not removed"
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: could not remove [{{ src_ds_name }}] {{ temp_rdm_name }}{{ item.item }}:
+          {{ item.msg | default('unknown error') }}. Delete it by hand; the LUN data is not affected.
+      loop: "{{ rdm_cleanup.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list }}"
+      loop_control:
+        label: "{{ temp_rdm_name }}{{ item.item }}"
 
     - name: "Disk {{ disk_index }} | Disconnect volume from ESXi host"
       everpure.flasharray.purefa_host:

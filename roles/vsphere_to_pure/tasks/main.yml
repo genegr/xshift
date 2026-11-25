@@ -111,8 +111,46 @@
     msg: "VM '{{ target_vm_name }}' has no flat VMDK to migrate."
   when: vm_flat_disks | length == 0
 
-- name: Resolve the ESXi host that runs vmkfstools
+- name: Resolve the ESXi host whose API runs the clone
   ansible.builtin.include_tasks: resolve_esxi_host.yml
+
+# The clone logs in to the ESXi host's vSphere API as root (no SSH). These checks are read-only,
+# so they also run on a dry run, and they come before anything is created: they prove the login
+# and that the host sees every source disk as a regular, cloneable VMDK.
+- name: Check that the ESXi login is configured for the execution host
+  ansible.builtin.assert:
+    that:
+      - hostvars[esxi_exec_host].ansible_password is defined
+    fail_msg: >-
+      Inventory host '{{ esxi_exec_host }}' has no ansible_password. The clone logs in to its
+      vSphere API with ansible_user (default root) and ansible_password (see inventory/hosts.yml).
+    quiet: true
+
+- name: Check the source disks through the ESXi host's API (vmware_vmdk_info)
+  community.vmware.vmware_vmdk_info:
+    hostname: "{{ esxi_exec_api_host }}"
+    username: "{{ hostvars[esxi_exec_host].ansible_user | default('root') }}"
+    password: "{{ hostvars[esxi_exec_host].ansible_password }}"
+    validate_certs: "{{ esxi_validate_certs }}"
+    path: "{{ item.value.backing_filename }}"
+  delegate_to: localhost
+  loop: "{{ vm_flat_disks }}"
+  loop_control:
+    label: "disk {{ item.key }}: {{ item.value.backing_filename }}"
+  register: esxi_source_vmdks
+
+- name: Stop when a source disk is missing or not a regular VMDK on that host
+  ansible.builtin.assert:
+    that:
+      - item.vmdk.exists
+      - item.vmdk.provisioning not in ['rdm', 'rdmp']
+    fail_msg: >-
+      {{ item.item.value.backing_filename }} is not cloneable from ESXi host '{{ esxi_exec_host }}':
+      {{ item.vmdk }}. The host must mount the datastore (set target_esxi_host otherwise).
+    quiet: true
+  loop: "{{ esxi_source_vmdks.results }}"
+  loop_control:
+    label: "disk {{ item.item.key }}"
 
 - name: Resolve the FlashArray host object for that ESXi host
   ansible.builtin.include_tasks: resolve_pure_host.yml

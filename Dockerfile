@@ -5,16 +5,17 @@
 FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    ANSIBLE_HOST_KEY_CHECKING=False \
     PIP_NO_CACHE_DIR=1
 
+# git: ansible-galaxy clones community.vmware (vmware_vmdk_clone) from its repository.
+# No SSH client is needed: ESXi is driven through its vSphere API.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      openssh-client sshpass ca-certificates \
+      git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Python deps, pinned in requirements.txt so the image rebuilds the same way:
-#   ansible-core
+#   ansible-core                          -> 2.21 or later, required by community.vmware
 #   openstacksdk / python-openstackclient -> OpenStack stage (openstack.cloud + CLI)
 #   pyvmomi                               -> community.vmware (vSphere stage)
 #   py-pure-client                        -> everpure.flasharray (Pure stage; large)

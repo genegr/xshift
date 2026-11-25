@@ -33,6 +33,7 @@ NFS/iSCSI copy is reduced to minutes (or seconds on thin/deduplicated data).
 - [Limitations & known issues](#limitations--known-issues)
 - [Roadmap](#roadmap)
 - [Repository layout](#repository-layout)
+- [License](#license)
 - [Disclaimer](#disclaimer)
 
 ---
@@ -370,13 +371,14 @@ packages from `requirements.txt` installed.
 - [ ] Exercise the new checks against hardware; read the esxtop VAAI counters around the clone.
 - [ ] Multi-VM stage 1 (loop over a VM list, one mapping file out).
 - [ ] Optional post-boot guest remediation (virtio/cloud-init) helpers.
-- [ ] A license.
+- [x] A license (Apache 2.0).
 
 ## Repository layout
 
 ```
 .
 ├── README.md                 # This file
+├── LICENSE                   # Apache License 2.0
 ├── ansible.cfg               # inventory path, roles_path, sane defaults
 ├── Dockerfile                # Migration-runner image (ansible + collections/SDKs)
 ├── requirements.txt          # Python packages for the image (pinned)
@@ -417,6 +419,12 @@ packages from `requirements.txt` installed.
 and [`.claude/skills/`](.claude/skills/) holds skills for the recurring jobs: verifying a change, changing the
 roles, the ESXi disk clone, stage 2, a lab run, and recovering from a failed run. Both are shared, so they
 carry no lab addresses or credentials. Put your own lab facts in `CLAUDE.local.md` (git-ignored).
+
+## License
+
+Licensed under the Apache License, Version 2.0; see [`LICENSE`](LICENSE). The Ansible collections the
+playbooks call (`community.vmware`, `openstack.cloud`, `everpure.flasharray`) are installed from their own
+sources under their own licenses; this repository neither includes nor modifies them.
 
 ## Disclaimer
 

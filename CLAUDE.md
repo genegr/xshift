@@ -54,6 +54,7 @@ CI (`.github/workflows/lint.yml`) runs the same. The `verify-changes` skill adds
 - **Shared array.** Only touch FlashArray objects this run created. Do not eradicate volumes (the destroy bin keeps them recoverable). Always give `purefa_host state: absent` a `volume:`; without it the module deletes the host object.
 - **Task names** lead with their context (`Disk 0 | Clone ...`, `<vm> | ...`); `.ansible-lint` skips `name[template]` for that reason. Lint profile is `moderate`; yamllint line length is 140.
 - **Docs move with behavior.** Update README.md (the "What is checked" table, prerequisites, limitations), the role README and the comments in `defaults/main.yml` in the same change.
+- **License.** The repository is Apache-2.0 (`LICENSE`); new files need no license header. Do not paste code from GPL-licensed projects into it: the collections the roles depend on are GPL-licensed (`community.vmware` is GPL-3.0-or-later), so call their modules and never copy their source.
 - **Git.** Commit only when asked. Commit subjects are sentence-case imperatives with no type prefix (`Fix stage 1 snapshot check against vCenter`). Do not commit `generated/`, `mapping.yaml`, `.ansible/` or anything from `.claude/settings.local.json` or `CLAUDE.local.md`.
 - **Real infrastructure needs a go-ahead.** Do not run `dry_run=false` (it creates and removes FlashArray volumes, RDM files and OpenStack objects) unless the person you work for says to, for that VM, in this session. A dry run is fine without asking.
 
